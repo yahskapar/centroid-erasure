@@ -1,0 +1,219 @@
+{
+  "description": "Integrity manifest for the artifacts shipped with centroid-erasure. Every file listed here is byte-identical to the artifact behind the published COLM 2026 results (source run: cross_model_v2_20260407_144343). The demo/fixtures/*.json are the raw per-model sweep outputs, so a local run can be compared directly against ours; note they contain more than the paper prints (see README, 'Example of Using Precomputed Centroids').",
+  "protocol": {
+    "n_coco_images": 2000,
+    "k": 256,
+    "text_layer": 12,
+    "visual_layer": 16,
+    "data_seed": 1337,
+    "kmeans_seed": 42,
+    "kmeans_backend": "faiss-gpu",
+    "coco_source": "detection-datasets/coco",
+    "coco_split": "train"
+  },
+  "files": {
+    "centroids/idefics3.npz": {
+      "sha256": "1639b96c9d46070d6e8aa2778e58c472e6867f2c068749ad7573e0078a4eb793",
+      "bytes": 8389148,
+      "arrays": {
+        "text_centroids": {
+          "shape": [
+            256,
+            4096
+          ],
+          "dtype": "float32"
+        },
+        "vis_centroids": {
+          "shape": [
+            256,
+            4096
+          ],
+          "dtype": "float32"
+        }
+      }
+    },
+    "centroids/internvl.npz": {
+      "sha256": "31436a62479532a7d9ba0a0e2bfaa9e6eb8ad3b93d56642bb2aa69c14326d790",
+      "bytes": 8389148,
+      "arrays": {
+        "text_centroids": {
+          "shape": [
+            256,
+            4096
+          ],
+          "dtype": "float32"
+        },
+        "vis_centroids": {
+          "shape": [
+            256,
+            4096
+          ],
+          "dtype": "float32"
+        }
+      }
+    },
+    "centroids/llava_ov.npz": {
+      "sha256": "ec22137c883f731c6af7cdeb37d1a2a4bbb64cc230316969805ee005649e6c5b",
+      "bytes": 7340572,
+      "arrays": {
+        "text_centroids": {
+          "shape": [
+            256,
+            3584
+          ],
+          "dtype": "float32"
+        },
+        "vis_centroids": {
+          "shape": [
+            256,
+            3584
+          ],
+          "dtype": "float32"
+        }
+      }
+    },
+    "centroids/qwen.npz": {
+      "sha256": "951c7dd5496013ac39e34bf88a777488be594ed56ac7b735f03a3cf273b061aa",
+      "bytes": 7340572,
+      "arrays": {
+        "text_centroids": {
+          "shape": [
+            256,
+            3584
+          ],
+          "dtype": "float32"
+        },
+        "vis_centroids": {
+          "shape": [
+            256,
+            3584
+          ],
+          "dtype": "float32"
+        }
+      }
+    },
+    "centroids/qwen3.npz": {
+      "sha256": "e5c652e5fce38d88176fca2bce01cfdc772028dec34175e9b8175d98d1390608",
+      "bytes": 8389148,
+      "arrays": {
+        "text_centroids": {
+          "shape": [
+            256,
+            4096
+          ],
+          "dtype": "float32"
+        },
+        "vis_centroids": {
+          "shape": [
+            256,
+            4096
+          ],
+          "dtype": "float32"
+        }
+      }
+    },
+    "centroids/qwen3_4b.npz": {
+      "sha256": "2cc2b5cedeae959a3ab054a98f7f2fbf1c5dab1721ed9cb92279ab7cd529c557",
+      "bytes": 5243420,
+      "arrays": {
+        "text_centroids": {
+          "shape": [
+            256,
+            2560
+          ],
+          "dtype": "float32"
+        },
+        "vis_centroids": {
+          "shape": [
+            256,
+            2560
+          ],
+          "dtype": "float32"
+        }
+      }
+    },
+    "centroids/qwen_3b.npz": {
+      "sha256": "885596f759f1a0fd71a9c1227d2327c72c113014d2a61ba04f3c0f1fc7cf8440",
+      "bytes": 4194844,
+      "arrays": {
+        "text_centroids": {
+          "shape": [
+            256,
+            2048
+          ],
+          "dtype": "float32"
+        },
+        "vis_centroids": {
+          "shape": [
+            256,
+            2048
+          ],
+          "dtype": "float32"
+        }
+      }
+    },
+    "demo/fixtures/idefics3_expected.json": {
+      "sha256": "c9334a88f538cdf3032c824b3ccd68d8932eacf9d193bbccfb98345e69c22443",
+      "bytes": 18318,
+      "published_summary": {
+        "mean_text_cost": 0.1888,
+        "mean_vis_cost": -0.0149,
+        "asymmetry_ratio": 12.7
+      }
+    },
+    "demo/fixtures/internvl_expected.json": {
+      "sha256": "2739be3c6a83be75255df70081a1a51c11d0df86a3d40fb0dda2cf461ed28756",
+      "bytes": 18294,
+      "published_summary": {
+        "mean_text_cost": 0.2945,
+        "mean_vis_cost": -0.0086,
+        "asymmetry_ratio": 34.4
+      }
+    },
+    "demo/fixtures/llava_ov_expected.json": {
+      "sha256": "2ca7feee551ab42cf1440d178ec0d9b52770e482f4aeb2906d39d54fdb85a1b6",
+      "bytes": 18304,
+      "published_summary": {
+        "mean_text_cost": 0.2577,
+        "mean_vis_cost": 0.0521,
+        "asymmetry_ratio": 4.9
+      }
+    },
+    "demo/fixtures/qwen3_4b_expected.json": {
+      "sha256": "42948208678ae19395cfb71ff41ea7ebb49a71d408267b8e52d8a96cf4c7e4f0",
+      "bytes": 18291,
+      "published_summary": {
+        "mean_text_cost": 0.347,
+        "mean_vis_cost": 0.1619,
+        "asymmetry_ratio": 2.1
+      }
+    },
+    "demo/fixtures/qwen3_expected.json": {
+      "sha256": "f4158744ddbe25ba3fabc9c4d9e6fcc76c532d9199cd73de873e1b9bb4379c3e",
+      "bytes": 18317,
+      "published_summary": {
+        "mean_text_cost": 0.3149,
+        "mean_vis_cost": 0.161,
+        "asymmetry_ratio": 2.0
+      }
+    },
+    "demo/fixtures/qwen_3b_expected.json": {
+      "sha256": "7ab4e51ed99eed985d8ce93641ac11eb2f430023b87b068e4fdf3a14d5134f5a",
+      "bytes": 18268,
+      "published_summary": {
+        "mean_text_cost": 0.1368,
+        "mean_vis_cost": 0.0907,
+        "asymmetry_ratio": 1.5
+      }
+    },
+    "demo/fixtures/qwen_expected.json": {
+      "sha256": "974136e88c0aedcecd3186457c5e28c4f3b0463aa0f2c8fb162fd92e6a7a973d",
+      "bytes": 18335,
+      "published_summary": {
+        "mean_text_cost": 0.2723,
+        "mean_vis_cost": 0.0142,
+        "asymmetry_ratio": 19.2
+      }
+    }
+  }
+}

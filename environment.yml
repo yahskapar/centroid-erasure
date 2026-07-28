@@ -1,0 +1,20 @@
+name: centroid-erasure
+channels: [pytorch, nvidia, conda-forge]
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      # The index must be its own entry; appending it to a requirement line
+      # is silently ignored and torch is then fetched from PyPI without CUDA.
+      - --extra-index-url https://download.pytorch.org/whl/cu124
+      - torch==2.6.0
+      - transformers==5.4.0
+      - accelerate==1.13.0
+      - numpy==2.2.6
+      - scikit-learn==1.7.2
+      - scipy==1.15.3
+      - datasets>=4.0.0
+      - Pillow>=10.0.0
+      - qwen-vl-utils>=0.0.8
+      - tqdm>=4.66.0
+      - -e .

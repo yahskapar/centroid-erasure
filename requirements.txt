@@ -1,0 +1,25 @@
+# Pinned to the exact environment that produced the published numbers.
+# The intervention hooks internal hidden states, so it is sensitive to
+# transformers internals; loosening the transformers pin is the most likely
+# cause of a run that does not reproduce.
+
+torch==2.6.0
+transformers==5.4.0
+accelerate==1.13.0
+numpy==2.2.6
+scikit-learn==1.7.2
+scipy==1.15.3
+
+datasets>=4.0.0
+Pillow>=10.0.0
+qwen-vl-utils>=0.0.8
+tqdm>=4.66.0
+
+# Optional. faiss-gpu makes centroid fitting much faster; without it the code
+# falls back to sklearn MiniBatchKMeans, which gives slightly different centers.
+# faiss-gpu>=1.7.0
+
+# Required for the registry entries that load quantised (medgemma, medgemma_27b,
+# gemma3_27b, qwen_32b, qwen3_32b, llava). Not needed for the seven models with
+# shipped centroid banks, which all load in bf16.
+bitsandbytes>=0.43.0
