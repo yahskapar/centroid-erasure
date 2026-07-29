@@ -138,8 +138,15 @@ class CentroidReplacementHook:
     def register(self):
         from .models import find_lm_layers, get_config
 
+        text_config = getattr(self.model.config, "text_config", self.model.config)
+        hidden_size = getattr(text_config, "hidden_size", None)
+        if hidden_size is not None and self.bank.dim != hidden_size:
+            raise ValueError(
+                f"centroid width {self.bank.dim} does not match model hidden "
+                f"size {hidden_size}"
+            )
         layers = find_lm_layers(self.model, get_config(self.model_name))
-        if self.layer >= len(layers):
+        if not 0 <= self.layer < len(layers):
             raise IndexError(
                 f"layer {self.layer} out of range for a {len(layers)}-layer model"
             )

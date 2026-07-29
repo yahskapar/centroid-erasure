@@ -62,6 +62,8 @@ def main():
     ap.add_argument("--alpha-interp", type=float, default=0.4, dest="alpha_interp")
     ap.add_argument("--alpha-cd", type=float, default=1.0, dest="alpha_cd")
     args = ap.parse_args()
+    if args.max_per_task <= 0:
+        raise SystemExit("--max-per-task must be positive")
 
     repo = Path(__file__).resolve().parent.parent
     cpath = Path(args.centroids) if args.centroids else repo / "centroids" / f"{args.model}.npz"
@@ -85,14 +87,27 @@ def main():
     device = next(model.parameters()).device
     # BLINK is 4-way; match the published pipeline's letter set exactly.
     choice_ids = get_choice_token_ids(processor, ALL_LETTERS[:4])
+    if set(choice_ids) != set(ALL_LETTERS[:4]):
+        raise SystemExit(f"tokenizer did not encode all answer letters: {choice_ids}")
+    if len(set(choice_ids.values())) != len(choice_ids):
+        raise SystemExit(f"answer letters do not have distinct token IDs: {choice_ids}")
 
     text_bank = CentroidBank.load(cpath, modality="text")
     vis_bank = CentroidBank.load(cpath, modality="visual")
+    hidden_dim = getattr(model.config, "text_config", model.config).hidden_size
+    if text_bank.dim != hidden_dim or vis_bank.dim != hidden_dim:
+        raise SystemExit(
+            f"centroid width {text_bank.dim}/{vis_bank.dim} does not match "
+            f"model hidden size {hidden_dim}"
+        )
 
     from centroid_erasure.data.blink import load_blink
 
     samples_by_task = load_blink(tasks=DEMO_TASKS, split="val",
                                  max_per_task=args.max_per_task)
+    missing = [task for task in DEMO_TASKS if not samples_by_task.get(task)]
+    if missing:
+        raise SystemExit(f"no samples loaded for demo tasks: {missing}")
 
     rows = []
     for task, samples in samples_by_task.items():
@@ -178,7 +193,8 @@ def main():
     print(" Small samples are noisy. Raise --max-per-task if a verdict is")
     print(" borderline; the published run uses the full BLINK val split.")
 
-    out = Path(__file__).resolve().parent / "demo_results.json"
+    out = repo / "results" / "demo_results.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
         json.dump({"model": args.model, "config": vars(args), "rows": rows}, f,
                   indent=2, default=str)

@@ -1,4 +1,5 @@
-# Pinned to the exact environment that produced the published numbers.
+# Pinned to the exact recorded loading, preprocessing, and evaluation
+# environment that reproduced the published numbers with the shipped banks.
 # The intervention hooks internal hidden states, so it is sensitive to
 # transformers internals; loosening the transformers pin is the most likely
 # cause of a run that does not reproduce.
@@ -10,16 +11,23 @@ numpy==2.2.6
 scikit-learn==1.7.2
 scipy==1.15.3
 
-datasets>=4.0.0
-Pillow>=10.0.0
-qwen-vl-utils>=0.0.8
-tqdm>=4.66.0
+datasets==4.8.4
+Pillow==12.1.1
+qwen-vl-utils==0.0.14
+tqdm==4.67.3
+huggingface-hub==1.8.0
+pandas==2.3.3
 
-# Optional. faiss-gpu makes centroid fitting much faster; without it the code
-# falls back to sklearn MiniBatchKMeans, which gives slightly different centers.
-# faiss-gpu>=1.7.0
+# Optional. faiss-gpu makes centroid fitting much faster; without a visible
+# FAISS GPU the code falls back to sklearn MiniBatchKMeans, which gives
+# slightly different centers. The original fit's FAISS package version was
+# unfortunately not logged, so no false exact pin is supplied here.
+# Install a CUDA-compatible faiss-gpu build separately when refitting.
 
 # Required for the registry entries that load quantised (medgemma, medgemma_27b,
 # gemma3_27b, qwen_32b, qwen3_32b, llava). Not needed for the seven models with
 # shipped centroid banks, which all load in bf16.
-bitsandbytes>=0.43.0
+bitsandbytes==0.49.2
+
+# The reproduction script runs the CPU suite before launching GPU work.
+pytest==9.1.1

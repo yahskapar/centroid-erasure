@@ -9,11 +9,11 @@
 
 **centroid-erasure** is the code and artifact release for [*The Cost of Language: Centroid Erasure Exposes and Exploits Modal Competition in Multimodal Language Models*](https://arxiv.org/abs/2604.14363) (COLM 2026).
 
-The paper introduces **centroid replacement**, a training-free probe that measures how much a multimodal language model depends on fine-grained text structure versus fine-grained visual structure. Replace a modality's activations with their K-means centroids at one layer, measure what accuracy the model loses, and compare the two costs. Across seven models and four training paradigms, erasing text structure costs about **4x** more accuracy than erasing visual structure on perception benchmarks.
+The paper introduces **centroid replacement**, a training-free probe that measures how much a multimodal language model depends on fine-grained text structure versus fine-grained visual structure. Replace a modality's activations with their K-means centroids at one layer, measure what accuracy the model loses, and compare the two costs. Across seven models spanning four architecture families, removing within-cluster text residuals costs about **4x** more accuracy than removing visual residuals on the perception-competition benchmarks studied.
 
 The same machinery gives an intervention. **Text centroid contrastive decoding (TCCD)** contrasts a clean forward pass against a text-erased one, recovering accuracy on tasks where text competes with visual evidence.
 
-This repo ships the method, not the paper's result files. Every number in the paper is in the paper; what is here is the infrastructure to re-run the pipeline, the centroid artifacts themselves, and a demo you can point at your own model.
+This repo ships the method and the reference artifacts, not an exhaustive dump of every paper experiment. It includes the infrastructure to re-run the core BLINK pipeline, the seven centroid banks and per-model sweep fixtures behind the cross-model tables, and a demo you can point at your own model.
 
 # :notebook: Methods
 
@@ -47,7 +47,7 @@ this release. Their numbers are reported in the paper; add a loader as described
 in [Adding a New Benchmark](#open_file_folder-adding-a-new-benchmark) to run them
 here. `main.py` itself is wired to BLINK only.
 
-Model weights are likewise **not** redistributed. All models load from their official HuggingFace repositories.
+Model weights are likewise **not** redistributed. The seven models with released banks load from their official HuggingFace repositories at immutable revisions recorded in `centroids/MANIFEST.json`; extension-only registry entries without released artifacts intentionally warn that they still track `main`. The seven released checkpoints and every dataset used by a shipped loader were pinned, public, and ungated when this release was audited. Network access is still required on first use, upstream terms remain the user's responsibility, and custom model entries should always set `revision`.
 
 # :wrench: Setup
 
@@ -57,7 +57,7 @@ STEP 1: `bash setup.sh conda` or `bash setup.sh uv`
 
 STEP 2: `conda activate centroid-erasure` or, when using `uv`, `source .venv/bin/activate`
 
-NOTE: versions in `requirements.txt` are pinned exactly (`torch==2.6.0+cu124`, `transformers==5.4.0`). The intervention hooks internal hidden states, so it is unusually sensitive to `transformers` internals. Loosening that pin is the most likely reason a run stops reproducing.
+NOTE: the recorded loading, preprocessing, and evaluation environment is pinned exactly in `requirements.txt`, `environment.yml`, and `centroids/MANIFEST.json` (`torch==2.6.0+cu124`, `transformers==5.4.0`, Python 3.10.20, and the preprocessing/data packages). `setup.sh` selects the CUDA 12.4 torch wheel. The intervention hooks internal hidden states, so loosening these pins—especially `transformers` or `qwen-vl-utils`—is a common reason a run stops reproducing. The historical `faiss-gpu` package version used to fit the shipped banks was not logged; this does not affect reproduction with those precomputed banks, but it prevents a claim of byte-identical refitting.
 
 # :computer: Example of Using Precomputed Centroids
 
@@ -70,7 +70,7 @@ Centroid banks for all seven models in the paper are in `centroids/`, so you can
 | `qwen3` | Qwen3-VL-8B-Instruct | SFT+ |
 | `qwen3_4b` | Qwen3-VL-4B-Instruct | SFT+ |
 | `internvl` | InternVL2.5-8B-MPO | MPO |
-| `llava_ov` | LLaVA-OneVision-7B | DPO |
+| `llava_ov` | LLaVA-OneVision-7B | SFT |
 | `idefics3` | Idefics3-8B-Llama3 | SFT |
 
 Each `.npz` holds a `text_centroids` and a `vis_centroids` array, both `(256, hidden_dim)` float32, fitted at L12 and L16 respectively on 2,000 MS-COCO images streamed from the `detection-datasets/coco` train split and shuffled with seed 1337.
@@ -110,7 +110,7 @@ Note 2: The demo reads the shipped bank and fits nothing, so the K-means backend
 This is the probe on its own, with no contrastive decoding.
 
 ```
-python main.py measure --model qwen --benchmark blink --out results.json
+python main.py measure --model qwen --benchmark blink --out results/measure.json
 ```
 
 It reports, per task, the baseline accuracy and the accuracy lost to full text erasure and full visual erasure, then the mean asymmetry.
@@ -141,21 +141,23 @@ Note 1: `best` is an oracle. The CLI prints a warning when you select it. The pa
 
 # :hammer: Fitting Your Own Centroids
 
-To run the method on a model with no bank in `centroids/`, fit one:
+To refit a shipped model or run the method on a model with no bank in `centroids/`, write a new bank:
 
 ```
-python main.py fit --model qwen3 --n 2000 --k 256
+python main.py fit --model qwen3 --n 2000 --k 256 --out artifacts/qwen3_refit.npz
 ```
 
 STEP 1: Confirm the model is in `MODEL_REGISTRY` (see [Adding a New Model](#robot-adding-a-new-model) if not).
 
-STEP 2: Run the command above. It harvests activations from 2,000 MS-COCO images and writes `centroids/<model>.npz`.
+STEP 2: Run the command above. It harvests activations from 2,000 MS-COCO images and writes the requested bank. The CLI refuses to overwrite an existing bank unless `--force` is explicit, protecting the seven checksummed release artifacts.
 
 STEP 3: Use it with `main.py measure` or `main.py tccd`.
 
-Note 1: `faiss-gpu` makes fitting much faster. Without it the code falls back to `sklearn.MiniBatchKMeans`, which yields slightly different centers. The backend actually used is printed and stored in the bank metadata.
+Note 1: `faiss-gpu` makes fitting much faster. Without a visible FAISS GPU the code falls back to `sklearn.MiniBatchKMeans`, which yields slightly different centers. CPU-only FAISS is not mislabeled as GPU. The backend actually used is printed and stored in the bank metadata. The original fit's FAISS package version was not captured, so a refit can be protocol-comparable but is not promised to be byte-identical to the shipped bank.
 
 Note 2: Centroids must be harvested in the same prompt context they will be applied in. Harvesting under a different prompt template produces an internally consistent but *different* set of centroids, which shifted per-task deltas by up to ~4.5 pp in our own testing. If your numbers look systematically off, check this first.
+
+Note 3: the fitting CLI uses only the pinned `detection-datasets/coco` train source by default. `--allow-coco-fallback` opts into alternate mirrors when that source is unavailable, but the resulting bank is not a reproduction of the paper fit. The chosen source, revision, package versions, layers, seeds, prompt, backend, and fallback count are embedded as `metadata_json` in new banks.
 
 # :robot: Adding a New Model
 
@@ -164,7 +166,8 @@ Note 2: Centroids must be harvested in the same prompt context they will be appl
   ```python
   "my_model": ModelConfig(
       model_id="org/my-model-hf",
-      lm_layer_path="model.layers",   # path to the decoder nn.ModuleList
+      revision="<40-character Hugging Face commit>",
+      lm_layer_path="model.language_model.layers",  # decoder nn.ModuleList
   ),
   ```
 
@@ -214,7 +217,7 @@ These are also available programmatically as `centroid_erasure.PAPER_PROTOCOL`.
 # :test_tube: Tests
 
 ```
-pytest                 # 316 CPU tests, no GPU and no model download, ~5 seconds
+pytest                 # 300+ CPU tests, no GPU and no model download, ~10 seconds
 pytest -m gpu          # 7 smoke tests against a live model, needs ~20 GB VRAM
 ```
 
@@ -228,12 +231,12 @@ The CPU suite pins the things that can break silently rather than loudly:
 | Protocol honesty | `cv` never selects using the held-out task, and can never beat its own oracle |
 | **Fidelity** | `CentroidBank.replace` is **bitwise identical** to `KMeansCentroids.replace` in `pipeline/paper_sweep.py`, and `CentroidReplacementHook` is bitwise identical to `TextCDHook` across 40 combinations (4 segments x 5 alphas x 2 visual spans) including the span-failure fallback; every protocol constant matches |
 | Shipped artifacts | all seven banks are K=256, float32, finite, non-degenerate, and text ≠ visual |
-| Repo hygiene | no reviewer IDs, home paths, or credentials in tracked files; no imports from the private working repo; every required file exists and is not `.gitignore`d |
+| Repo hygiene | credential/home-path patterns and private working-repo imports are rejected; every required file exists and is not `.gitignore`d |
 | Docs drift | every `--flag` and subcommand in the docs exists in `argparse`; `PROTOCOL.md` constants match `PAPER_PROTOCOL` |
 | Harvest match | `main.py fit` uses the same prompt, COCO source/split, shuffle seed, span resolution and float16 storage as the published script |
 | Artifacts | every shipped `.npz` and reference fixture matches its recorded SHA-256 |
 
-That last row exists because two `.gitignore` rules once silently excluded source files (`*_token*` matched `visual_tokens.py`, `data/` matched `centroid_erasure/data/`). The suite now fails if any tracked source file is shadowed by an ignore rule.
+The repository-hygiene row exists because two `.gitignore` rules once silently excluded source files (`*_token*` matched `visual_tokens.py`, `data/` matched `centroid_erasure/data/`). The suite now fails if any tracked source file is shadowed by an ignore rule.
 
 ## Reproducing the core result
 
@@ -254,7 +257,7 @@ The default run uses the shipped `centroids/qwen.npz`, which is byte-identical t
 |---|---|
 | `centroid_erasure/` | the library. Import this to use the method. |
 | `main.py` | CLI for fitting, measuring, and TCCD. |
-| `pipeline/paper_sweep.py` | the **exact, unrefactored** script that produced the published numbers, kept separate so it can be audited independently of the library. |
+| `pipeline/paper_sweep.py` | the logic-preserved, unrefactored script that produced the published numbers, with release-safe imports/comments and immutable upstream pins. |
 | `centroids/` | seven fitted centroid banks, one per model in the paper. |
 | `demo/` | the end-to-end demo and its expected-output fixture. |
 | `docs/` | protocol details and extension notes. |

@@ -23,6 +23,26 @@ def git(*args):
     ).stdout
 
 
+def is_gitignored(rel):
+    """Evaluate ignore rules even when ``rel`` is already tracked.
+
+    Plain ``git check-ignore`` suppresses tracked paths, which makes it
+    unsuitable for detecting a newly added broad rule that would omit the file
+    from a fresh release. ``--no-index -v`` reports the winning rule; a winning
+    negation (``!path``) means the path is explicitly allowed.
+    """
+    result = subprocess.run(
+        ["git", "-C", REPO, "check-ignore", "--no-index", "-v", rel],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 1:
+        return False
+    assert result.returncode == 0, result.stderr
+    rule = result.stdout.split("\t", 1)[0].split(":", 2)[-1]
+    return not rule.startswith("!")
+
+
 def _in_git_work_tree():
     """A source tarball or `git archive` export is a valid way to consume this
     repo, and git-dependent checks cannot run there. Skip rather than fail."""
@@ -67,7 +87,14 @@ MUST_SHIP = [
     "LICENSE",
     "pipeline/paper_sweep.py",
     "demo/run_demo.py",
+    "centroids/MANIFEST.json",
     "centroids/qwen.npz",
+    "centroids/qwen_3b.npz",
+    "centroids/qwen3.npz",
+    "centroids/qwen3_4b.npz",
+    "centroids/internvl.npz",
+    "centroids/llava_ov.npz",
+    "centroids/idefics3.npz",
 ]
 
 
@@ -79,8 +106,7 @@ def test_required_file_exists(rel):
 @needs_git
 @pytest.mark.parametrize("rel", MUST_SHIP)
 def test_required_file_is_not_gitignored(rel):
-    rc = subprocess.run(["git", "-C", REPO, "check-ignore", "-q", rel]).returncode
-    assert rc != 0, f".gitignore excludes {rel}, which must ship"
+    assert not is_gitignored(rel), f".gitignore excludes {rel}, which must ship"
 
 
 # Synthetic paths only. These must stay content-free: naming real internal or
@@ -90,35 +116,23 @@ MUST_NOT_SHIP = [
     "_working/draft.md", "notes/todo.md", "scan.pdf",
     "saved.mhtml", "a/per_sample.jsonl", "run.log", "main.tex",
     ".env", "api_key.txt", "stray_activations.npz", "photo.png",
-    "checkpoints/model.safetensors", "archive.zip",
+    "checkpoints/model.safetensors", "archive.zip", "demo/demo_results.json",
+    "centroids/local_refit.npz",
 ]
 
 
 @needs_git
 @pytest.mark.parametrize("rel", MUST_NOT_SHIP)
 def test_sensitive_path_is_gitignored(rel):
-    rc = subprocess.run(["git", "-C", REPO, "check-ignore", "-q", rel]).returncode
-    assert rc == 0, f".gitignore does NOT exclude {rel}"
+    assert is_gitignored(rel), f".gitignore does NOT exclude {rel}"
 
 
 # ── nothing leaks ──
 
-# Reviewer identifiers from the review thread. Assembled from
-# fragments so this file does not itself contain a literal match, which would
-# make the scanner below flag its own pattern list.
-_REVIEWERS = ["gy" + "FC", "VY" + "F5", "S2" + "yC", "3A" + "cd"]
-
-# Third-party and internal document identifiers. A .gitignore rule that NAMES
-# the confidential thing it excludes republishes it; that happened once and is
-# why these scanners no longer exempt .gitignore.
-_THIRD_PARTY = ["Core" + "SemDB", "BL" + "_SQL"]
-_INTERNAL = ["CAMERA_" + "READY", "Z_" + "COLM", "REBUT" + "TAL", "final_" + "responses",
-             "REVIEWER_" + "COVERAGE", "CLAIMS_" + "RIGHTSIZING"]
-
+# Patterns that are safe to publish and still catch common credential/path
+# leaks. Do not embed sensitive identifiers in the scanner itself: obfuscating
+# them into adjacent string fragments still republishes them to a reader.
 FORBIDDEN = {
-    **{f"reviewer id {r}": r"\b" + r + r"\b" for r in _REVIEWERS},
-    **{f"third-party submission {t}": t for t in _THIRD_PARTY},
-    **{f"internal doc {d}": d for d in _INTERNAL},
     "author home directory": r"/home/[a-z]+/",
     "openai key": r"sk-[A-Za-z0-9]{16}",
     "google api key": r"AIza[A-Za-z0-9_\-]{10}",
@@ -175,9 +189,11 @@ def test_every_intra_package_import_resolves():
 
 
 def test_no_imports_from_the_private_working_repo():
-    """`src.*`, `experiments.*`, `experiments_A6000.*` do not exist in the release."""
+    """Private `src.*` and `experiments*` modules do not exist in the release."""
     bad = []
-    rx = re.compile(r"^\s*(from|import)\s+(src|experiments|experiments_A6000)\b", re.M)
+    rx = re.compile(
+        r"^\s*(from|import)\s+(src|experiments(?:_[A-Za-z0-9]+)*)\b", re.M
+    )
     for path in py_files():
         for m in rx.finditer(open(path).read()):
             bad.append(f"{os.path.relpath(path, REPO)}: {m.group(0).strip()}")

@@ -19,6 +19,7 @@ results/
 artifacts/
 repro_*/
 repro_smoke_*/
+demo/demo_results.json
 *.log
 *.jsonl
 per_sample*
@@ -90,5 +91,13 @@ secrets.*
 # ============================================================================
 # Explicit allows: the artifacts this release exists to ship.
 # ============================================================================
-!centroids/*.npz
+# Only the seven checksummed camera-ready banks are release artifacts. A local
+# refit in centroids/ remains ignored unless it is reviewed and force-added.
+!centroids/qwen.npz
+!centroids/qwen_3b.npz
+!centroids/qwen3.npz
+!centroids/qwen3_4b.npz
+!centroids/internvl.npz
+!centroids/llava_ov.npz
+!centroids/idefics3.npz
 !demo/fixtures/*.json

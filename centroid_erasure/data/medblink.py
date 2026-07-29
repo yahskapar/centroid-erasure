@@ -15,11 +15,16 @@ from collections import defaultdict
 from typing import Dict, List, Optional
 
 
+MEDBLINK_REPO = "MahtabBg/MedBLINK"
+MEDBLINK_REVISION = "e492d79e6d6d3319d5d82b954708c3be2c5e42ef"
+
+
 def load_medblink(
     tasks: Optional[List[str]] = None,
     split: str = "val",
     max_per_task: Optional[int] = None,
-    hf_repo: str = "MahtabBg/MedBLINK",
+    hf_repo: str = MEDBLINK_REPO,
+    revision: Optional[str] = None,
 ) -> Dict[str, List[dict]]:
     """
     Load MedBLINK benchmark tasks.
@@ -33,14 +38,19 @@ def load_medblink(
         split: Dataset split (default: 'val')
         max_per_task: Cap samples per task
         hf_repo: HuggingFace repository ID
+        revision: Immutable dataset commit for a custom repository. The
+            built-in repository is pinned automatically when this is omitted.
 
     Returns:
         Dict mapping task_name -> list of sample dicts with keys:
             idx, prompt, images (list of PIL), answer
     """
     print(f"  Loading MedBLINK ({split})...")
+    resolved_revision = (
+        MEDBLINK_REVISION if revision is None and hf_repo == MEDBLINK_REPO else revision
+    )
     try:
-        ds = hf_load(hf_repo, split=split)
+        ds = hf_load(hf_repo, split=split, revision=resolved_revision)
     except Exception as e:
         print(f"    ⚠ Failed to load MedBLINK: {e}")
         return {}

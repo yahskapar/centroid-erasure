@@ -64,11 +64,28 @@ def test_a_row_that_is_already_a_centroid_is_unchanged(bank):
 
 
 def test_save_load_round_trip(tmp_path, bank):
-    other = CentroidBank(torch.randn(32, 16))
+    bank.meta.update({"backend": "sklearn", "seed": 42})
+    other = CentroidBank(
+        torch.randn(32, 16), meta={"backend": "faiss-gpu", "seed": 7}
+    )
     p = tmp_path / "rt.npz"
     CentroidBank.save_pair(p, bank, other)
-    assert torch.allclose(CentroidBank.load(p, "text").mu, bank.mu, atol=1e-6)
-    assert torch.allclose(CentroidBank.load(p, "visual").mu, other.mu, atol=1e-6)
+    text = CentroidBank.load(p, "text")
+    visual = CentroidBank.load(p, "visual")
+    assert torch.allclose(text.mu, bank.mu, atol=1e-6)
+    assert torch.allclose(visual.mu, other.mu, atol=1e-6)
+    assert text.meta["backend"] == "sklearn" and text.meta["seed"] == 42
+    assert visual.meta["backend"] == "faiss-gpu" and visual.meta["seed"] == 7
+    with np.load(p, allow_pickle=False) as data:
+        assert data["metadata_json"].ndim == 0
+
+
+def test_load_rejects_recorded_modality_mismatch(tmp_path, bank):
+    bank.meta["modality"] = "visual"
+    p = tmp_path / "wrong_modality.npz"
+    CentroidBank.save_pair(p, bank, CentroidBank(torch.randn(32, 16)))
+    with pytest.raises(ValueError, match="metadata says modality"):
+        CentroidBank.load(p, "text")
 
 
 def test_load_rejects_an_unknown_modality(tmp_path, bank):
@@ -123,7 +140,48 @@ def test_fit_is_deterministic_for_a_fixed_seed():
 def test_fit_records_which_backend_was_used():
     """faiss and sklearn give different centers; runs are only comparable within one."""
     X = np.random.default_rng(2).standard_normal((200, 8)).astype(np.float32)
-    assert fit_centroids(X, k=4, verbose=False).meta["backend"] in ("faiss", "sklearn")
+    meta = fit_centroids(X, k=4, verbose=False).meta
+    assert meta["backend"] in (
+        "faiss-gpu",
+        "sklearn",
+    )
+    assert meta["backend_version"]
+
+
+def test_cpu_only_faiss_does_not_masquerade_as_the_paper_gpu_backend():
+    try:
+        import faiss
+    except ImportError:
+        pytest.skip("faiss is not installed")
+    if faiss.get_num_gpus() > 0:
+        pytest.skip("a real FAISS GPU backend is visible")
+
+    X = np.random.default_rng(4).standard_normal((200, 8)).astype(np.float32)
+    assert fit_centroids(X, k=4, verbose=False).meta["backend"] == "sklearn"
+
+
+def test_visible_faiss_gpu_training_failure_is_not_silently_changed_to_sklearn(
+    monkeypatch,
+):
+    import sys
+    import types
+
+    class BrokenKMeans:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def train(self, X):
+            raise RuntimeError("FAISS GPU training failed")
+
+    fake_faiss = types.SimpleNamespace(
+        __version__="test",
+        get_num_gpus=lambda: 1,
+        Kmeans=BrokenKMeans,
+    )
+    monkeypatch.setitem(sys.modules, "faiss", fake_faiss)
+    X = np.random.default_rng(6).standard_normal((200, 8)).astype(np.float32)
+    with pytest.raises(RuntimeError, match="FAISS GPU training failed"):
+        fit_centroids(X, k=4, verbose=False)
 
 
 def test_fit_drops_non_finite_rows_rather_than_propagating_nan():
@@ -131,6 +189,20 @@ def test_fit_drops_non_finite_rows_rather_than_propagating_nan():
     X[5] = np.nan
     X[9] = np.inf
     assert torch.isfinite(fit_centroids(X, k=4, verbose=False).mu).all()
+
+
+@pytest.mark.parametrize(
+    "X,k,match",
+    [
+        (np.empty((0, 8), dtype=np.float32), 4, "from 0 finite"),
+        (np.ones((3, 8), dtype=np.float32), 4, "from 3 finite"),
+        (np.ones((8,), dtype=np.float32), 4, "shape"),
+        (np.ones((8, 2), dtype=np.float32), 0, "positive"),
+    ],
+)
+def test_fit_rejects_invalid_or_insufficient_activation_matrices(X, k, match):
+    with pytest.raises(ValueError, match=match):
+        fit_centroids(X, k=k, verbose=False)
 
 
 # ── artifact integrity manifest ──
@@ -142,8 +214,14 @@ def test_manifest_exists_and_covers_every_shipped_artifact():
     manifest = json.load(open(os.path.join(REPO, "centroids", "MANIFEST.json")))
     listed = set(manifest["files"])
     shipped = {os.path.relpath(b, REPO) for b in BANKS}
-    shipped.add("demo/fixtures/qwen_expected.json")
-    assert shipped <= listed, f"unlisted artifacts: {sorted(shipped - listed)}"
+    shipped.update(
+        os.path.relpath(path, REPO)
+        for path in glob.glob(os.path.join(REPO, "demo", "fixtures", "*.json"))
+    )
+    assert shipped == listed, (
+        f"manifest mismatch: unlisted={sorted(shipped - listed)}, "
+        f"missing={sorted(listed - shipped)}"
+    )
 
 
 @pytest.mark.parametrize("path", BANKS, ids=lambda p: os.path.basename(p))
@@ -166,6 +244,64 @@ def test_manifest_protocol_matches_the_code():
     manifest = json.load(open(os.path.join(REPO, "centroids", "MANIFEST.json")))
     for key in ("k", "text_layer", "visual_layer", "data_seed", "kmeans_seed"):
         assert manifest["protocol"][key] == PAPER_PROTOCOL[key], f"manifest {key} drifted"
+
+
+def test_manifest_pins_the_shipped_models_and_core_datasets():
+    import json
+
+    from centroid_erasure import MODEL_REGISTRY
+    from centroid_erasure.data.blink import BLINK_REVISION
+    from centroid_erasure.data.coco import COCO_REVISION
+
+    manifest = json.load(open(os.path.join(REPO, "centroids", "MANIFEST.json")))
+    shipped = {os.path.basename(path)[:-4] for path in BANKS}
+    assert set(manifest["model_revisions"]) == shipped
+    for name in shipped:
+        revision = MODEL_REGISTRY[name].revision
+        assert revision == manifest["model_revisions"][name]
+        assert len(revision) == 40 and all(c in "0123456789abcdef" for c in revision)
+    assert manifest["protocol"]["blink_revision"] == BLINK_REVISION
+    assert manifest["protocol"]["coco_revision"] == COCO_REVISION
+
+
+def test_manifest_pins_every_auxiliary_dataset_loader():
+    import json
+
+    from centroid_erasure.data.cvbench import CVBENCH_REPO, CVBENCH_REVISION
+    from centroid_erasure.data.medblink import MEDBLINK_REPO, MEDBLINK_REVISION
+    from centroid_erasure.data.mmvp import MMVP_REPO, MMVP_REVISION
+    from centroid_erasure.data.pope import POPE_REPO, POPE_REVISION
+    from centroid_erasure.data.scienceqa import SCIENCEQA_REPO, SCIENCEQA_REVISION
+
+    manifest = json.load(open(os.path.join(REPO, "centroids", "MANIFEST.json")))
+    expected = {
+        MEDBLINK_REPO: MEDBLINK_REVISION,
+        CVBENCH_REPO: CVBENCH_REVISION,
+        MMVP_REPO: MMVP_REVISION,
+        POPE_REPO: POPE_REVISION,
+        SCIENCEQA_REPO: SCIENCEQA_REVISION,
+    }
+    assert manifest["auxiliary_dataset_revisions"] == expected
+    for revision in expected.values():
+        assert len(revision) == 40
+        assert all(character in "0123456789abcdef" for character in revision)
+
+
+def test_environment_files_match_the_recorded_paper_environment():
+    import json
+
+    manifest = json.load(open(os.path.join(REPO, "centroids", "MANIFEST.json")))
+    recorded = manifest["environment"]
+    requirements = open(os.path.join(REPO, "requirements.txt")).read()
+    environment_yml = open(os.path.join(REPO, "environment.yml")).read()
+
+    assert f"python={recorded['python']}" in environment_yml
+    assert f"torch=={recorded['torch']}" in environment_yml
+    for distribution, version in recorded.items():
+        if distribution in {"python", "torch"}:
+            continue
+        assert f"{distribution}=={version}" in requirements
+        assert f"{distribution}=={version}" in environment_yml
 
 
 @pytest.mark.parametrize(

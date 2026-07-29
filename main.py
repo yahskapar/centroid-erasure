@@ -8,8 +8,9 @@ centroid-erasure command line interface.
 
 Run `python main.py <command> --help` for the flags of a single command.
 
-This is the convenience layer. The exact code that produced the published
-numbers lives in pipeline/, unrefactored, so it can be audited independently.
+This is the convenience layer. A logic-preserved release copy of the script
+that produced the published numbers lives in pipeline/ so it can be audited
+independently.
 """
 
 import argparse
@@ -62,6 +63,71 @@ def _gold(sample):
     return parse_mc_answer(sample.get("answer", ""))
 
 
+def _validate_choice_ids(choice_ids, letters):
+    """Fail loudly if answer-letter scoring would be incomplete or ambiguous."""
+    missing = [letter for letter in letters if letter not in choice_ids]
+    if missing:
+        raise SystemExit(
+            f"tokenizer produced no token ID for answer letters: {missing}"
+        )
+    values = [choice_ids[letter] for letter in letters]
+    if len(set(values)) != len(values):
+        raise SystemExit(
+            f"answer letters do not map to distinct token IDs: "
+            f"{dict(zip(letters, values))}"
+        )
+
+
+def _require_samples(samples_by_task, requested_tasks):
+    """Turn dataset/network failures into an actionable error before model work."""
+    if not samples_by_task:
+        raise SystemExit(
+            "no benchmark samples loaded; check network access, dataset availability, "
+            "and the pinned dataset revision"
+        )
+    missing = [task for task in requested_tasks if not samples_by_task.get(task)]
+    if missing:
+        raise SystemExit(f"no samples loaded for requested tasks: {missing}")
+
+
+def _validate_bank_and_layer(model, cfg, bank, layer, label):
+    """Catch incompatible bank provenance or layer choices before a full sweep."""
+    from centroid_erasure.models import find_lm_layers
+
+    text_cfg = getattr(model.config, "text_config", model.config)
+    hidden_dim = text_cfg.hidden_size
+    if bank.dim != hidden_dim:
+        raise SystemExit(
+            f"{label} centroid width is {bank.dim}, but {cfg.model_id} has "
+            f"hidden size {hidden_dim}; use the bank fitted for this checkpoint"
+        )
+    recorded_model_id = bank.meta.get("model_id")
+    if recorded_model_id is not None and recorded_model_id != cfg.model_id:
+        raise SystemExit(
+            f"{label} bank was fitted for {recorded_model_id}, not {cfg.model_id}"
+        )
+    recorded_revision = bank.meta.get("model_revision")
+    if (
+        recorded_revision is not None
+        and cfg.revision is not None
+        and recorded_revision != cfg.revision
+    ):
+        raise SystemExit(
+            f"{label} bank revision {recorded_revision} does not match "
+            f"the configured revision {cfg.revision}"
+        )
+    recorded_layer = bank.meta.get("layer")
+    if recorded_layer is not None and recorded_layer != layer:
+        raise SystemExit(
+            f"{label} bank was fitted at L{recorded_layer}, not requested L{layer}"
+        )
+    layers = find_lm_layers(model, cfg)
+    if not 0 <= layer < len(layers):
+        raise SystemExit(
+            f"{label} layer L{layer} is out of range for this {len(layers)}-layer model"
+        )
+
+
 def _load_samples(benchmark, tasks, max_per_task):
     if benchmark != "blink":
         raise SystemExit(
@@ -81,13 +147,30 @@ def cmd_fit(args):
     """Harvest COCO activations and fit text + visual centroid banks."""
     from centroid_erasure.models import find_lm_layers, get_config
 
+    if args.n <= 0 or args.k <= 0:
+        raise SystemExit("--n and --k must both be positive")
+    if args.seed < 0:
+        raise SystemExit("--seed must be nonnegative")
+    for flag, value in (
+        ("--text-layer", args.text_layer),
+        ("--visual-layer", args.visual_layer),
+    ):
+        if value is not None and value < 0:
+            raise SystemExit(f"{flag} must be nonnegative")
+    out = Path(args.out or f"centroids/{args.model}.npz")
+    if out.exists() and not args.force:
+        raise SystemExit(
+            f"refusing to overwrite existing centroid bank: {out}\n"
+            "Pass --out with a new path, or pass --force if replacement is intentional."
+        )
+
     model, processor, cfg = load_model(args.model)
     device = next(model.parameters()).device
     layers = find_lm_layers(model, get_config(args.model))
 
     text_layer = args.text_layer if args.text_layer is not None else PAPER_PROTOCOL["text_layer"]
     vis_layer = args.visual_layer if args.visual_layer is not None else PAPER_PROTOCOL["visual_layer"]
-    if text_layer >= len(layers) or vis_layer >= len(layers):
+    if not 0 <= text_layer < len(layers) or not 0 <= vis_layer < len(layers):
         raise SystemExit(
             f"{args.model} has {len(layers)} layers; requested text L{text_layer} "
             f"and visual L{vis_layer}. Pass --text-layer / --visual-layer."
@@ -104,9 +187,21 @@ def cmd_fit(args):
     # hidden state, not from a stand-in), same float16 storage. Centroids are
     # sensitive to all four, so a divergence here yields a bank that is
     # internally consistent but not comparable to the published one.
-    coco = load_coco(max_samples=args.n, seed=PAPER_PROTOCOL["data_seed"])
+    coco = load_coco(
+        max_samples=args.n,
+        seed=PAPER_PROTOCOL["data_seed"],
+        allow_fallback=args.allow_coco_fallback,
+    )
     if not coco:
-        raise SystemExit("no COCO images loaded; check network access and datasets version")
+        fallback_hint = (
+            " Pass --allow-coco-fallback to use a non-paper mirror (results will differ)."
+            if not args.allow_coco_fallback
+            else ""
+        )
+        raise SystemExit(
+            "no COCO images loaded; check network access and the pinned dataset revision."
+            + fallback_hint
+        )
     print(f"  harvesting {len(coco)} COCO images at text L{text_layer}, visual L{vis_layer}")
 
     # Capped preallocation, matching the pipeline. Unbounded fp32 accumulation
@@ -116,6 +211,8 @@ def cmd_fit(args):
     vis_tokens = np.zeros((max_vis, hidden_dim), dtype=np.float16)
     text_tokens = np.zeros((max_text, hidden_dim), dtype=np.float16)
     vis_cursor = text_cursor = 0
+    n_forward_success = 0
+    n_span_fallback = 0
 
     for i, sample in enumerate(coco):
         img = sample["images"][0]
@@ -151,8 +248,10 @@ def cmd_fit(args):
         try:
             vs, ve = find_visual_token_range(args.model, ids, ref.to(device), processor)
         except Exception:
+            n_span_fallback += 1
             ve = max(int(ids.shape[1] * 0.7), ids.shape[1] - 100)
             vs = 10
+        n_forward_success += 1
 
         if "vis" in captured:
             block = captured["vis"][0, vs:ve, :].half().numpy()
@@ -181,10 +280,55 @@ def cmd_fit(args):
     text_bank = fit_centroids(text_tokens[:text_cursor], k=args.k, seed=args.seed)
     vis_bank = fit_centroids(vis_tokens[:vis_cursor], k=args.k, seed=args.seed)
 
-    out = Path(args.out or f"centroids/{args.model}.npz")
+    import importlib.metadata
+    import platform
+
+    def version(distribution):
+        try:
+            return importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            return "unknown"
+
+    source = coco[0]
+    common_meta = {
+        "model": args.model,
+        "model_id": cfg.model_id,
+        "model_revision": cfg.revision,
+        "requested_images": args.n,
+        "loaded_images": len(coco),
+        "successful_forwards": n_forward_success,
+        "span_fallbacks": n_span_fallback,
+        "coco_source": source.get("_source"),
+        "coco_split": source.get("_split"),
+        "coco_revision": source.get("_revision"),
+        "data_seed": source.get("_shuffle_seed"),
+        "harvest_prompt": HARVEST_PROMPT,
+        "activation_storage_dtype": "float16",
+        "python": platform.python_version(),
+        "torch": str(torch.__version__),
+        "torch_cuda": torch.version.cuda,
+        "compute_device": str(device),
+        "gpu": (
+            torch.cuda.get_device_name(device)
+            if getattr(device, "type", None) == "cuda"
+            else None
+        ),
+        "transformers": version("transformers"),
+        "datasets": version("datasets"),
+        "qwen_vl_utils": version("qwen-vl-utils"),
+        "numpy": version("numpy"),
+        "scikit_learn": version("scikit-learn"),
+        "scipy": version("scipy"),
+    }
+    text_bank.meta.update(common_meta, modality="text", layer=text_layer)
+    vis_bank.meta.update(common_meta, modality="visual", layer=vis_layer)
     CentroidBank.save_pair(out, text_bank, vis_bank)
     print(f"  wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
-    print(f"  backend: {text_bank.meta['backend']}  (faiss and sklearn differ slightly)")
+    print(
+        f"  backend: text={text_bank.meta['backend']}, "
+        f"visual={vis_bank.meta['backend']}  (faiss-gpu and sklearn differ slightly)"
+    )
+    print("  fit provenance is embedded as metadata_json in the bank")
 
 
 # ── measure ──
@@ -192,17 +336,29 @@ def cmd_fit(args):
 
 def cmd_measure(args):
     """Measure text vs visual centroid cost. This is the paper's probe."""
-    model, processor, _ = load_model(args.model)
+    if not 1 <= args.n_choices <= len(ALL_LETTERS):
+        raise SystemExit(f"--n-choices must be between 1 and {len(ALL_LETTERS)}")
+    model, processor, cfg = load_model(args.model)
     device = next(model.parameters()).device
-    choice_ids = get_choice_token_ids(processor, ALL_LETTERS[: args.n_choices])
+    letters = ALL_LETTERS[: args.n_choices]
+    choice_ids = get_choice_token_ids(processor, letters)
+    _validate_choice_ids(choice_ids, letters)
 
     banks = {
         "text": CentroidBank.load(args.centroids, modality="text"),
         "visual": CentroidBank.load(args.centroids, modality="visual"),
     }
     layers = {"text": args.text_layer, "visual": args.visual_layer}
+    for modality in ("text", "visual"):
+        _validate_bank_and_layer(
+            model, cfg, banks[modality], layers[modality], modality
+        )
 
-    samples_by_task = _load_samples(args.benchmark, args.tasks or PAPER_TASKS, args.max_per_task)
+    requested_tasks = args.tasks or PAPER_TASKS
+    samples_by_task = _load_samples(
+        args.benchmark, requested_tasks, args.max_per_task
+    )
+    _require_samples(samples_by_task, requested_tasks)
     results = {}
 
     for task, samples in samples_by_task.items():
@@ -267,6 +423,8 @@ def cmd_measure(args):
 
 def cmd_tccd(args):
     """Apply text centroid contrastive decoding and report per-task deltas."""
+    if not 1 <= args.n_choices <= len(ALL_LETTERS):
+        raise SystemExit(f"--n-choices must be between 1 and {len(ALL_LETTERS)}")
     if args.protocol == "best":
         print(
             "  NOTE: --protocol best is an ORACLE UPPER BOUND. It selects the\n"
@@ -274,13 +432,22 @@ def cmd_tccd(args):
             "  a deployable gain; the paper reports it only alongside fixed and cv.\n"
         )
 
-    model, processor, _ = load_model(args.model)
+    model, processor, cfg = load_model(args.model)
     device = next(model.parameters()).device
-    choice_ids = get_choice_token_ids(processor, ALL_LETTERS[: args.n_choices])
+    letters = ALL_LETTERS[: args.n_choices]
+    choice_ids = get_choice_token_ids(processor, letters)
+    _validate_choice_ids(choice_ids, letters)
     bank = CentroidBank.load(args.centroids, modality="text")
+    _validate_bank_and_layer(model, cfg, bank, args.text_layer, "text")
 
     grid = [args.alpha_interp] if args.protocol == "fixed" else args.grid
-    samples_by_task = _load_samples(args.benchmark, args.tasks or PAPER_TASKS, args.max_per_task)
+    if not grid:
+        raise SystemExit("--grid must contain at least one alpha")
+    requested_tasks = args.tasks or PAPER_TASKS
+    samples_by_task = _load_samples(
+        args.benchmark, requested_tasks, args.max_per_task
+    )
+    _require_samples(samples_by_task, requested_tasks)
 
     per_task = {}
     for task, samples in samples_by_task.items():
@@ -400,7 +567,7 @@ def _compare_to_published(model, results, mean_text, mean_vis, strict=True):
             print("    and confirm visual-span detection is not falling back.")
     elif delta >= mean_tol:
         print("\n    A subset or a locally fitted bank moves these numbers: sample size,")
-        print("    the faiss-vs-sklearn K-means backend, and harvest context all matter.")
+        print("    the faiss-gpu-vs-sklearn K-means backend, and harvest context all matter.")
         print("    See docs/PROTOCOL.md.")
 
 
@@ -442,6 +609,16 @@ def build_parser():
     sp.add_argument("--text-layer", type=int, default=None, dest="text_layer")
     sp.add_argument("--visual-layer", type=int, default=None, dest="visual_layer")
     sp.add_argument("--out", default=None)
+    sp.add_argument(
+        "--allow-coco-fallback",
+        action="store_true",
+        help="allow a non-paper COCO mirror if the pinned source is unavailable",
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="allow overwriting an existing centroid bank",
+    )
     sp.set_defaults(func=cmd_fit)
 
     sp = sub.add_parser("measure", help="text vs visual centroid cost (the probe)")
@@ -470,6 +647,8 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    if getattr(args, "max_per_task", None) is not None and args.max_per_task <= 0:
+        raise SystemExit("--max-per-task must be positive")
     if getattr(args, "centroids", None) is None and args.command in ("measure", "tccd"):
         args.centroids = f"centroids/{args.model}.npz"
         if not Path(args.centroids).exists():

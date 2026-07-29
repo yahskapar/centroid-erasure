@@ -12,6 +12,9 @@ alpha_interp=1 is the identity. This is the sign convention used throughout
 the paper; note that it is the opposite of "erasure strength".
 """
 
+import json
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -87,23 +90,90 @@ class CentroidBank:
             modality: "text" or "visual" — selects which array to read.
         """
         key = {"text": "text_centroids", "visual": "vis_centroids"}[modality]
-        with np.load(path) as data:
+        with np.load(path, allow_pickle=False) as data:
             if key not in data.files:
                 raise KeyError(
                     f"{path} has no array '{key}'. Present: {list(data.files)}"
                 )
             centers = data[key]
-        return cls(centers, meta={"path": str(path), "modality": modality})
+            persisted = {}
+            if "metadata_json" in data.files:
+                try:
+                    pair_meta = json.loads(str(data["metadata_json"].item()))
+                    persisted = pair_meta.get(modality, {})
+                except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as e:
+                    raise ValueError(f"{path} has invalid metadata_json: {e}") from e
+                if not isinstance(persisted, dict):
+                    raise ValueError(
+                        f"{path} metadata for {modality!r} must be an object"
+                    )
+        recorded_modality = persisted.get("modality")
+        if recorded_modality is not None and recorded_modality != modality:
+            raise ValueError(
+                f"{path} metadata says modality={recorded_modality!r}, "
+                f"but {modality!r} was requested"
+            )
+        meta = dict(persisted)
+        meta["path"] = str(path)
+        meta.setdefault("modality", modality)
+        return cls(centers, meta=meta)
 
     @staticmethod
     def save_pair(path, text_bank, visual_bank):
-        """Write a text/visual bank pair in the layout the paper artifacts use."""
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            path,
-            text_centroids=text_bank.mu.cpu().numpy().astype(np.float32),
-            vis_centroids=visual_bank.mu.cpu().numpy().astype(np.float32),
+        """Write a text/visual bank pair plus JSON provenance metadata.
+
+        Existing paper artifacts contain only the two centroid arrays and remain
+        fully supported. Newly fitted banks embed each modality's fit metadata
+        as a non-pickled JSON scalar so the K-means backend and harvest
+        provenance survive a save/load round trip.
+
+        The write is atomic within the destination directory: an interrupted
+        fit cannot leave a partially written bank at the requested path.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        metadata = json.dumps(
+            {
+                "format_version": 1,
+                "text": text_bank.meta,
+                "visual": visual_bank.meta,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=_json_default,
         )
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", suffix=".npz", dir=path.parent, delete=False
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                np.savez(
+                    tmp,
+                    text_centroids=text_bank.mu.detach().cpu().numpy().astype(np.float32),
+                    vis_centroids=visual_bank.mu.detach().cpu().numpy().astype(np.float32),
+                    metadata_json=np.asarray(metadata),
+                )
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink()
+
+
+def _json_default(value):
+    """Convert common provenance scalar types without enabling pickle."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    raise TypeError(f"metadata value {value!r} is not JSON serializable")
 
 
 def fit_centroids(X, k=DEFAULT_K, seed=DEFAULT_KMEANS_SEED, verbose=True):
@@ -122,34 +192,62 @@ def fit_centroids(X, k=DEFAULT_K, seed=DEFAULT_KMEANS_SEED, verbose=True):
         CentroidBank.
     """
     X = np.asarray(X, dtype=np.float32)
+    if X.ndim != 2 or X.shape[1] == 0:
+        raise ValueError(f"X must have shape (N, D) with D > 0; got {X.shape}")
+    if k <= 0:
+        raise ValueError(f"k must be positive; got {k}")
     finite = np.isfinite(X).all(axis=1)
     n_bad = int((~finite).sum())
     if n_bad:
         if verbose:
             print(f"    filtered {n_bad}/{len(X)} non-finite rows")
         X = X[finite]
+    if len(X) < k:
+        raise ValueError(
+            f"cannot fit K={k} centroids from {len(X)} finite activation rows"
+        )
 
     try:
         import faiss
+    except ImportError:
+        faiss = None
 
+    # The CPU-only faiss wheel accepts ``gpu=True`` but silently resets the flag
+    # and trains on CPU. Conversely, a real GPU training failure must propagate
+    # instead of silently changing algorithms.
+    if faiss is not None and faiss.get_num_gpus() > 0:
         km = faiss.Kmeans(X.shape[1], k, niter=20, gpu=True, seed=seed)
         km.train(X)
         if verbose:
             print(f"    fitted K={k} with faiss-gpu ({len(X)} tokens)")
         return CentroidBank(
             km.centroids,
-            meta={"backend": "faiss", "k": k, "seed": seed, "n_tokens": len(X)},
+            meta={
+                "backend": "faiss-gpu",
+                "backend_version": getattr(faiss, "__version__", "unknown"),
+                "visible_faiss_gpus": faiss.get_num_gpus(),
+                "k": k,
+                "seed": seed,
+                "n_tokens": len(X),
+            },
         )
-    except Exception:
-        from sklearn.cluster import MiniBatchKMeans
 
-        km = MiniBatchKMeans(
-            n_clusters=k, random_state=seed, batch_size=4096, n_init=3
-        )
-        km.fit(X)
-        if verbose:
-            print(f"    fitted K={k} with sklearn ({len(X)} tokens)")
-        return CentroidBank(
-            km.cluster_centers_,
-            meta={"backend": "sklearn", "k": k, "seed": seed, "n_tokens": len(X)},
-        )
+    import sklearn
+    from sklearn.cluster import MiniBatchKMeans
+
+    km = MiniBatchKMeans(
+        n_clusters=k, random_state=seed, batch_size=4096, n_init=3
+    )
+    km.fit(X)
+    if verbose:
+        print(f"    fitted K={k} with sklearn ({len(X)} tokens)")
+    return CentroidBank(
+        km.cluster_centers_,
+        meta={
+            "backend": "sklearn",
+            "backend_version": sklearn.__version__,
+            "k": k,
+            "seed": seed,
+            "n_tokens": len(X),
+        },
+    )

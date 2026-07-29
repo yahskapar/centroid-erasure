@@ -14,6 +14,10 @@ from datasets import load_dataset as hf_load
 from typing import List, Optional
 
 
+SCIENCEQA_REPO = "lmms-lab/ScienceQA-IMG"
+SCIENCEQA_REVISION = "b9984af01798586705cee1fbdfa80a6dcbef04f1"
+
+
 def load_scienceqa_img(
     max_samples: Optional[int] = None,
     split: str = "test",
@@ -31,7 +35,11 @@ def load_scienceqa_img(
             hint (str), subject (str)
     """
     print(f"  Loading ScienceQA-IMG ({split})...")
-    ds = hf_load("lmms-lab/ScienceQA-IMG", split=split)
+    ds = hf_load(
+        SCIENCEQA_REPO,
+        split=split,
+        revision=SCIENCEQA_REVISION,
+    )
 
     samples = []
     for item in ds:

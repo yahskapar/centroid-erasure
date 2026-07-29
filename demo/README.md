@@ -33,6 +33,9 @@ of full visual erasure, and the TCCD delta. It closes with two verdicts:
 1. text cost exceeds visual cost (the paper's central measurement),
 2. TCCD helps TEXT-COMPETES tasks more than TEXT-NEEDED ones (its selectivity).
 
+The machine-readable output is written to the ignored path
+`results/demo_results.json`, so running the demo does not dirty a clean clone.
+
 ## Reading the output honestly
 
 The demo defaults to 40 samples per task so it finishes quickly. That is small

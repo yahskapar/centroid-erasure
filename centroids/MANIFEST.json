@@ -8,8 +8,43 @@
     "data_seed": 1337,
     "kmeans_seed": 42,
     "kmeans_backend": "faiss-gpu",
+    "kmeans_backend_version": "not recorded in the original fit environment",
     "coco_source": "detection-datasets/coco",
-    "coco_split": "train"
+    "coco_split": "train",
+    "coco_revision": "cf0b22332314a937e9dc8a1957b21725430bb41d",
+    "blink_revision": "a3666eb249237ba3d5eca8db21176cc47967e040"
+  },
+  "model_revisions": {
+    "qwen": "cc594898137f460bfe9f0759e9844b3ce807cfb5",
+    "qwen_3b": "66285546d2b821cf421d4f5eb2576359d3770cd3",
+    "qwen3": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+    "qwen3_4b": "ebb281ec70b05090aa6165b016eac8ec08e71b17",
+    "internvl": "543db189852edd2dbf0c0395c6afe4159cdc842f",
+    "llava_ov": "0d50680527681998e456c7b78950205bedd8a068",
+    "idefics3": "fddb4ff79181e55a994674777e06cd5456ce3dc3"
+  },
+  "auxiliary_dataset_revisions": {
+    "MahtabBg/MedBLINK": "e492d79e6d6d3319d5d82b954708c3be2c5e42ef",
+    "nyu-visionx/CV-Bench": "bc284db50d036958861cb60cdd7b77612052ce0d",
+    "MMVP/MMVP": "37eafecab8a3940c50c2ade5b36de69dbc99a8cf",
+    "lmms-lab/POPE": "4db1276663dfa5eb8ad16a52d24c31a09e470896",
+    "lmms-lab/ScienceQA-IMG": "b9984af01798586705cee1fbdfa80a6dcbef04f1"
+  },
+  "environment": {
+    "python": "3.10.20",
+    "torch": "2.6.0+cu124",
+    "transformers": "5.4.0",
+    "accelerate": "1.13.0",
+    "numpy": "2.2.6",
+    "scikit-learn": "1.7.2",
+    "scipy": "1.15.3",
+    "datasets": "4.8.4",
+    "Pillow": "12.1.1",
+    "qwen-vl-utils": "0.0.14",
+    "tqdm": "4.67.3",
+    "huggingface-hub": "1.8.0",
+    "pandas": "2.3.3",
+    "bitsandbytes": "0.49.2"
   },
   "files": {
     "centroids/idefics3.npz": {

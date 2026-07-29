@@ -8,9 +8,12 @@ recorded so you have something concrete to compare against.
 | GPU | NVIDIA RTX A6000 (48 GB) |
 | torch | 2.6.0+cu124 |
 | transformers | 5.4.0 |
+| qwen-vl-utils | 0.0.14 |
 | model | Qwen2.5-VL-7B-Instruct |
+| model revision | `cc594898137f460bfe9f0759e9844b3ce807cfb5` |
 | centroids | shipped `centroids/qwen.npz` (nothing refitted) |
 | split | full BLINK validation, n=771 |
+| BLINK revision | `a3666eb249237ba3d5eca8db21176cc47967e040` |
 | runtime | ~40 minutes, peak ~46 GB VRAM |
 
 ## Result

@@ -21,6 +21,10 @@ from typing import List, Optional
 import re
 
 
+MMVP_REPO = "MMVP/MMVP"
+MMVP_REVISION = "37eafecab8a3940c50c2ade5b36de69dbc99a8cf"
+
+
 def load_mmvp(max_samples: Optional[int] = None) -> List[dict]:
     """
     Load MMVP benchmark.
@@ -39,7 +43,7 @@ def load_mmvp(max_samples: Optional[int] = None) -> List[dict]:
     # ── Load images ──
     print("  Loading MMVP images from HuggingFace...")
     try:
-        ds = hf_load("MMVP/MMVP", split="train")
+        ds = hf_load(MMVP_REPO, split="train", revision=MMVP_REVISION)
     except Exception as e:
         print(f"    ⚠ Failed to load MMVP/MMVP: {e}")
         return []
@@ -90,7 +94,12 @@ def _load_questions_csv():
         return None
 
     try:
-        csv_path = hf_hub_download("MMVP/MMVP", "Questions.csv", repo_type="dataset")
+        csv_path = hf_hub_download(
+            MMVP_REPO,
+            "Questions.csv",
+            repo_type="dataset",
+            revision=MMVP_REVISION,
+        )
         df = pd.read_csv(csv_path)
     except Exception as e:
         print(f"    ⚠ Questions.csv download failed: {e}")

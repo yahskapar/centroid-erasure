@@ -15,6 +15,11 @@
 # ============================================================================
 set -uo pipefail
 
+if [ "$#" -ne 0 ]; then
+  echo "Usage: $0"
+  exit 2
+fi
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 PY="${PYTHON:-python3}"

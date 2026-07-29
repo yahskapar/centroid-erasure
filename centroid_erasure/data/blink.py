@@ -11,6 +11,11 @@ from datasets import load_dataset as hf_load
 from typing import Dict, List, Optional
 
 
+# Immutable dataset commit used by the camera-ready release. Pinning the
+# revision protects sample order, prompts, images, and answer labels.
+BLINK_REVISION = "a3666eb249237ba3d5eca8db21176cc47967e040"
+
+
 # All 14 BLINK tasks
 ALL_TASKS = [
     "Art_Style",
@@ -62,7 +67,12 @@ def load_blink(
     for task_name in tasks:
         print(f"  Loading BLINK/{task_name} ({split})...")
         try:
-            ds = hf_load("BLINK-Benchmark/BLINK", task_name, split=split)
+            ds = hf_load(
+                "BLINK-Benchmark/BLINK",
+                task_name,
+                split=split,
+                revision=BLINK_REVISION,
+            )
         except Exception as e:
             print(f"    ⚠ Failed: {e}")
             continue

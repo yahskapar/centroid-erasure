@@ -1,4 +1,9 @@
+from pathlib import Path
+
 from setuptools import find_packages, setup
+
+
+ROOT = Path(__file__).resolve().parent
 
 setup(
     name="centroid-erasure",
@@ -11,6 +16,8 @@ setup(
     author="Akshay Paruchuri",
     license="Apache-2.0",
     url="https://github.com/yahskapar/centroid-erasure",
+    long_description=(ROOT / "README.md").read_text(encoding="utf-8"),
+    long_description_content_type="text/markdown",
     packages=find_packages(include=["centroid_erasure", "centroid_erasure.*"]),
     python_requires=">=3.10",
     install_requires=[
@@ -20,16 +27,20 @@ setup(
         "numpy==2.2.6",
         "scikit-learn==1.7.2",
         "scipy==1.15.3",
-        "datasets>=4.0.0",
+        "datasets==4.8.4",
         # Hard import for the default model (Qwen2.5-VL) in prepare_inputs.
-        "qwen-vl-utils>=0.0.8",
-        "Pillow>=10.0.0",
-        "tqdm>=4.66.0",
-        # Needed by the quantised registry entries (e.g. medgemma).
-        "bitsandbytes>=0.43.0",
+        "qwen-vl-utils==0.0.14",
+        "Pillow==12.1.1",
+        "tqdm==4.67.3",
+        "huggingface-hub==1.8.0",
+        "pandas==2.3.3",
     ],
+    extras_require={
+        # Needed only by quantised registry entries such as MedGemma.
+        "quantization": ["bitsandbytes==0.49.2"],
+        "test": ["pytest==9.1.1"],
+    },
     classifiers=[
-        "License :: OSI Approved :: Apache Software License",
         "Programming Language :: Python :: 3.10",
     ],
 )

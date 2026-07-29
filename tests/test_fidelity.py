@@ -225,8 +225,64 @@ def test_coco_loader_matches_the_published_source_split_and_seed():
     assert coco.SHUFFLE_BUFFER == 1000
 
     src = open(SWEEP).read()
-    assert 'load_dataset("detection-datasets/coco", split="train", streaming=True)' in src
+    assert '"detection-datasets/coco"' in src
+    assert 'split="train"' in src
+    assert "streaming=True" in src
+    assert "revision=COCO_REVISION" in src
     assert "buffer_size=1000" in src
+
+
+def test_cli_coco_mode_does_not_silently_fall_back(monkeypatch):
+    """A fallback mirror changes the fitting sample and must require opt-in."""
+    from centroid_erasure.data import coco
+
+    calls = []
+
+    def unavailable(dataset_id, **kwargs):
+        calls.append((dataset_id, kwargs))
+        raise OSError("offline")
+
+    monkeypatch.setattr(coco, "hf_load", unavailable)
+    assert coco.load_coco(max_samples=1, allow_fallback=False) == []
+    assert len(calls) == 1
+    assert calls[0][0] == "detection-datasets/coco"
+    assert calls[0][1]["revision"] == coco.COCO_REVISION
+
+    calls.clear()
+    assert coco.load_coco(max_samples=1, allow_fallback=True) == []
+    assert [call[0] for call in calls] == [
+        source[0] for source in coco._COCO_SOURCES
+    ]
+
+
+@pytest.mark.parametrize(
+    "module_name,loader_name,repo_constant,revision_constant",
+    [
+        ("centroid_erasure.data.cvbench", "load_cvbench", "CVBENCH_REPO", "CVBENCH_REVISION"),
+        ("centroid_erasure.data.medblink", "load_medblink", "MEDBLINK_REPO", "MEDBLINK_REVISION"),
+    ],
+)
+def test_custom_dataset_override_does_not_inherit_builtin_revision(
+    module_name, loader_name, repo_constant, revision_constant, monkeypatch
+):
+    import importlib
+
+    module = importlib.import_module(module_name)
+    calls = []
+
+    def empty_dataset(repo, **kwargs):
+        calls.append((repo, kwargs))
+        return []
+
+    monkeypatch.setattr(module, "hf_load", empty_dataset)
+    loader = getattr(module, loader_name)
+    loader()
+    assert calls[-1][0] == getattr(module, repo_constant)
+    assert calls[-1][1]["revision"] == getattr(module, revision_constant)
+
+    loader(hf_repo="org/custom-dataset")
+    assert calls[-1][0] == "org/custom-dataset"
+    assert calls[-1][1]["revision"] is None
 
 
 def test_fit_resolves_the_span_from_the_captured_hidden_state():

@@ -10,7 +10,8 @@ Add a `ModelConfig` to `MODEL_REGISTRY` in `centroid_erasure/models.py`:
 ```python
 "my_model": ModelConfig(
     model_id="org/my-model-hf",
-    lm_layer_path="model.layers",
+    revision="<40-character Hugging Face commit>",
+    lm_layer_path="model.language_model.layers",
     dtype_str="bfloat16",
     quant_4bit=False,
 ),
@@ -23,10 +24,13 @@ paths across current VLMs:
 
 | Family | Path |
 |---|---|
-| Qwen2.5-VL, Qwen3-VL | `model.layers` |
-| LLaVA, InternVL | `language_model.model.layers` |
-| LLaVA-OneVision, Gemma3 | `language_model.layers` |
+| Qwen2.5-VL, Qwen3-VL (`transformers==5.4.0`) | `model.language_model.layers` |
+| InternVL HF, LLaVA-OneVision (`transformers==5.4.0`) | `model.language_model.layers` |
 | Idefics3 | `model.text_model.layers` |
+
+Pin `revision` to an immutable Hugging Face commit. A floating `main` can
+change weights, processor settings, or a chat template without any local code
+change; all seven release models are pinned in `centroids/MANIFEST.json`.
 
 Then add a branch to `load_model()` and one to `prepare_inputs()`. Most recent
 models work with the generic `AutoModelForImageTextToText` plus
@@ -97,6 +101,8 @@ heuristic (`vis_start=10`, `vis_end≈0.7*seq_len`). That will not crash, and it
 will quietly produce meaningless numbers. Check one sample first:
 
 ```python
+import torch
+
 from centroid_erasure import find_visual_token_range, load_model, prepare_inputs
 
 model, processor, _ = load_model("my_model")

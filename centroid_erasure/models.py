@@ -13,6 +13,9 @@ class ModelConfig:
     """Full specification for a supported VLM."""
     model_id: str
     lm_layer_path: str
+    # Immutable Hugging Face commit used by the released paper artifacts.
+    # Registry entries outside the seven-model release may leave this unset.
+    revision: Optional[str] = None
     dtype_str: str = "bfloat16"
     quant_4bit: bool = False
     quant_8bit: bool = False
@@ -37,7 +40,8 @@ MODEL_REGISTRY = {
     ),
     "qwen": ModelConfig(
         model_id="Qwen/Qwen2.5-VL-7B-Instruct",
-        lm_layer_path="model.layers",
+        lm_layer_path="model.language_model.layers",
+        revision="cc594898137f460bfe9f0759e9844b3ce807cfb5",
         analysis_layers=[0, 4, 8, 12, 16, 20, 24],
         intervention_layers=[0, 4, 8, 12],
     ),
@@ -49,19 +53,22 @@ MODEL_REGISTRY = {
     ),
     "qwen3": ModelConfig(
         model_id="Qwen/Qwen3-VL-8B-Instruct",
-        lm_layer_path="model.layers",
+        lm_layer_path="model.language_model.layers",
+        revision="0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
         analysis_layers=[0, 4, 8, 12, 16, 20, 24, 32],
         intervention_layers=[0, 4, 8, 12],
     ),
     "idefics3": ModelConfig(
         model_id="HuggingFaceM4/Idefics3-8B-Llama3",
         lm_layer_path="model.text_model.layers",
+        revision="fddb4ff79181e55a994674777e06cd5456ce3dc3",
         analysis_layers=[0, 4, 8, 12, 16, 20, 24],
         intervention_layers=[0, 4, 8, 12],
     ),
     "internvl": ModelConfig(
         model_id="OpenGVLab/InternVL2_5-8B-MPO-hf",
-        lm_layer_path="language_model.model.layers",
+        lm_layer_path="model.language_model.layers",
+        revision="543db189852edd2dbf0c0395c6afe4159cdc842f",
         analysis_layers=[0, 4, 8, 12, 16, 20, 24],
         intervention_layers=[0, 4, 8, 12],
     ),
@@ -79,13 +86,15 @@ MODEL_REGISTRY = {
     ),
     "llava_ov": ModelConfig(
         model_id="llava-hf/llava-onevision-qwen2-7b-ov-hf",
-        lm_layer_path="language_model.layers",
+        lm_layer_path="model.language_model.layers",
+        revision="0d50680527681998e456c7b78950205bedd8a068",
         analysis_layers=[0, 4, 8, 12, 16, 20, 24],
         intervention_layers=[0, 4, 8, 12],
     ),
     "qwen_3b": ModelConfig(
         model_id="Qwen/Qwen2.5-VL-3B-Instruct",
-        lm_layer_path="model.layers",
+        lm_layer_path="model.language_model.layers",
+        revision="66285546d2b821cf421d4f5eb2576359d3770cd3",
         analysis_layers=[0, 4, 8, 12, 16, 20, 24],
         intervention_layers=[0, 4, 8, 12],
     ),
@@ -98,7 +107,8 @@ MODEL_REGISTRY = {
     ),
     "qwen3_4b": ModelConfig(
         model_id="Qwen/Qwen3-VL-4B-Instruct",
-        lm_layer_path="model.layers",
+        lm_layer_path="model.language_model.layers",
+        revision="ebb281ec70b05090aa6165b016eac8ec08e71b17",
         analysis_layers=[0, 4, 8, 12, 16, 20, 24],
         intervention_layers=[0, 4, 8, 12],
     ),
@@ -208,7 +218,9 @@ def load_model(model_name: str, device_map: str = "auto"):
     import torch
     config = get_config(model_name)
     model_id = config.model_id
-    print(f"  Loading {model_name}: {model_id}")
+    revision_kwargs = {"revision": config.revision} if config.revision else {}
+    revision_note = f" @ {config.revision[:12]}" if config.revision else " @ main (unpinned)"
+    print(f"  Loading {model_name}: {model_id}{revision_note}")
 
     qcfg = None
     if config.quant_4bit:
@@ -226,19 +238,22 @@ def load_model(model_name: str, device_map: str = "auto"):
             LlavaNextForConditionalGeneration,
             LlavaNextProcessor,
         )
-        processor = LlavaNextProcessor.from_pretrained(model_id)
+        processor = LlavaNextProcessor.from_pretrained(model_id, **revision_kwargs)
         model = LlavaNextForConditionalGeneration.from_pretrained(
             model_id,
             torch_dtype=config.dtype,
             quantization_config=qcfg,
             device_map=device_map,
             low_cpu_mem_usage=True,
+            **revision_kwargs,
         )
 
     elif model_name in ("qwen", "qwen2_vl", "qwen3", "qwen_3b", "qwen_32b", "qwen3_4b", "qwen3_32b"):
         from transformers import AutoProcessor, AutoModelForImageTextToText
 
-        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(
+            model_id, trust_remote_code=True, **revision_kwargs
+        )
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             torch_dtype=config.dtype,
@@ -246,62 +261,70 @@ def load_model(model_name: str, device_map: str = "auto"):
             device_map=device_map,
             low_cpu_mem_usage=True,
             trust_remote_code=True,
+            **revision_kwargs,
         )
     elif model_name == "idefics3":
         from transformers import AutoProcessor, AutoModelForImageTextToText
-        processor = AutoProcessor.from_pretrained(model_id)
+        processor = AutoProcessor.from_pretrained(model_id, **revision_kwargs)
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             torch_dtype=config.dtype,
             device_map=device_map,
             low_cpu_mem_usage=True,
+            **revision_kwargs,
         )
 
     elif model_name in ("internvl", "internvl3_8b", "internvl35_8b"):
         from transformers import AutoProcessor, AutoModelForImageTextToText
         # trust_remote_code=True is a no-op for native HF classes and the
         # required path for InternVL 3.5's example usage; safe across all three.
-        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(
+            model_id, trust_remote_code=True, **revision_kwargs
+        )
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             torch_dtype=config.dtype,
             device_map=device_map,
             low_cpu_mem_usage=True,
             trust_remote_code=True,
+            **revision_kwargs,
         )
 
     elif model_name == "llava_ov":
         from transformers import AutoProcessor, AutoModelForImageTextToText
-        processor = AutoProcessor.from_pretrained(model_id)
+        processor = AutoProcessor.from_pretrained(model_id, **revision_kwargs)
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             torch_dtype=config.dtype,
             device_map=device_map,
             low_cpu_mem_usage=True,
+            **revision_kwargs,
         )
 
     elif model_name in ("gemma3", "gemma3_12b", "gemma3_27b"):
         from transformers import AutoProcessor, AutoModelForImageTextToText
-        processor = AutoProcessor.from_pretrained(model_id)
+        processor = AutoProcessor.from_pretrained(model_id, **revision_kwargs)
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             torch_dtype=config.dtype,
             quantization_config=qcfg,
             device_map=device_map,
             low_cpu_mem_usage=True,
+            **revision_kwargs,
         )
 
     elif model_name in ("medgemma", "medgemma_27b"):
         # MedGemma (Gemma3-based clinical VLM). The 4B entry loads in 4-bit and
         # the 27B in 8-bit; both need bitsandbytes.
         from transformers import AutoProcessor, AutoModelForImageTextToText
-        processor = AutoProcessor.from_pretrained(model_id)
+        processor = AutoProcessor.from_pretrained(model_id, **revision_kwargs)
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             torch_dtype=config.dtype,
             quantization_config=qcfg,
             device_map=device_map,
             low_cpu_mem_usage=True,
+            **revision_kwargs,
         )
 
     else:

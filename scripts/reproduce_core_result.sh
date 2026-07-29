@@ -15,7 +15,8 @@
 #
 # Expect roughly 40 minutes for the full split on an A6000.
 #
-# Prints a consolidated VERDICTS block at the end. Nothing is modified.
+# Prints a consolidated VERDICTS block at the end. Tracked files are not
+# modified; logs and JSON outputs are written under ignored repro_<timestamp>/.
 # ============================================================================
 set -uo pipefail
 
@@ -23,7 +24,12 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 PY="${PYTHON:-python3}"
-QUICK=0; [ "${1:-}" = "--quick" ] && QUICK=1
+QUICK=0
+if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != "--quick" ]; }; then
+  echo "Usage: $0 [--quick]"
+  exit 2
+fi
+[ "${1:-}" = "--quick" ] && QUICK=1
 STAMP="$(date +%Y%m%d_%H%M%S)"
 OUT="$REPO/repro_$STAMP"
 mkdir -p "$OUT"
@@ -96,11 +102,12 @@ print(f"    mode: {mode}")
 print(f"    {'task':<22}{'text cost':>23}{'visual cost':>23}")
 print(f"    {'':<22}{'ours':>11}{'paper':>12}{'ours':>11}{'paper':>12}")
 
-rows, per_task_ok = [], True
+rows, per_task_ok, missing_tasks = [], True, []
 for task, p in pub.items():
     g = got["per_task"].get(task)
     if not g:
         print(f"    {task:<22}  (absent from this run)")
+        missing_tasks.append(task)
         continue
     rows.append((g["text_centroid_cost"], p["text_centroid_cost"],
                  g["vis_centroid_cost"], p["vis_centroid_cost"]))
@@ -118,6 +125,9 @@ for task, p in pub.items():
 if not rows:
     print("    no overlapping tasks; cannot compare")
     raise SystemExit(1)
+coverage_ok = not missing_tasks
+if missing_tasks:
+    print(f"    missing published tasks: {', '.join(missing_tasks)}")
 
 mt_o = sum(r[0] for r in rows)/len(rows); mt_p = sum(r[1] for r in rows)/len(rows)
 mv_o = sum(r[2] for r in rows)/len(rows); mv_p = sum(r[3] for r in rows)/len(rows)
@@ -140,10 +150,11 @@ ok_asym = asym_o > 5.0
 print(f"    CHECK text cost > visual cost       : {'PASS' if ok_dir else 'FAIL'}")
 print(f"    CHECK mean text cost within {mean_tol:.3f}   : {'PASS' if ok_text else 'FAIL'}  (|diff|={d:.4f})")
 print(f"    CHECK asymmetry > 5x                : {'PASS' if ok_asym else 'FAIL'}  ({asym_o:.1f}x)")
+print(f"    CHECK all six published tasks       : {'PASS' if coverage_ok else 'FAIL'}")
 if strict:
     print(f"    CHECK every task within 2 items     : {'PASS' if per_task_ok else 'FAIL'}")
 
-ok = ok_dir and ok_text and ok_asym and (per_task_ok or not strict)
+ok = ok_dir and ok_text and ok_asym and coverage_ok and (per_task_ok or not strict)
 raise SystemExit(0 if ok else 1)
 PY
 CMP=${PIPESTATUS[0]}
@@ -176,4 +187,5 @@ fi
 echo "=============================================="
 } | tee -a "$LOG"
 
-[ "$UNIT" = "0" ] && [ "$SMOKE" = "0" ] && [ "$MEAS" = "0" ] && [ "$CMP" = "0" ]
+[ "$UNIT" = "0" ] && [ "$SMOKE" = "0" ] && [ "$MEAS" = "0" ] && \
+  [ "$CMP" = "0" ] && [ "$PINNED" = "yes" ]

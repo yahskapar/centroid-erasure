@@ -15,10 +15,15 @@ from datasets import load_dataset as hf_load
 from typing import Dict, List, Optional
 
 
+CVBENCH_REPO = "nyu-visionx/CV-Bench"
+CVBENCH_REVISION = "bc284db50d036958861cb60cdd7b77612052ce0d"
+
+
 def load_cvbench(
     max_samples: Optional[int] = None,
     split: str = "test",
-    hf_repo: str = "nyu-visionx/CV-Bench",
+    hf_repo: str = CVBENCH_REPO,
+    revision: Optional[str] = None,
 ) -> Dict[str, List[dict]]:
     """
     Load CV-Bench spatial and depth tasks.
@@ -27,14 +32,19 @@ def load_cvbench(
         max_samples: Cap samples per category (None = all)
         split: Dataset split
         hf_repo: HuggingFace repository ID
+        revision: Immutable dataset commit for a custom repository. The
+            built-in repository is pinned automatically when this is omitted.
 
     Returns:
         Dict mapping category ('2d_spatial', '3d_depth') -> list of dicts:
             question, choices, answer, image (PIL), category
     """
     print(f"  Loading CV-Bench ({split})...")
+    resolved_revision = (
+        CVBENCH_REVISION if revision is None and hf_repo == CVBENCH_REPO else revision
+    )
     try:
-        ds = hf_load(hf_repo, split=split)
+        ds = hf_load(hf_repo, split=split, revision=resolved_revision)
     except Exception as e:
         print(f"    ⚠ Failed: {e}")
         print(f"    (CV-Bench may require a different repo ID.)")

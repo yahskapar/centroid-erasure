@@ -29,6 +29,11 @@ _COCO_SOURCES = [
     ("merve/coco", "test", "image"),
 ]
 
+# Immutable revision of the source used by the published fit. Fallback mirrors
+# are deliberately not assigned this revision because they are different
+# datasets; their provenance is recorded in every returned sample instead.
+COCO_REVISION = "cf0b22332314a937e9dc8a1957b21725430bb41d"
+
 # Matches DATA_SEED in the published pipeline.
 DATA_SEED = 1337
 SHUFFLE_BUFFER = 1000
@@ -38,6 +43,7 @@ def load_coco(
     max_samples: Optional[int] = 2000,
     split: Optional[str] = None,
     seed: int = DATA_SEED,
+    allow_fallback: bool = True,
 ) -> List[dict]:
     """
     Load COCO images with a generic prompt for centroid fitting.
@@ -51,6 +57,10 @@ def load_coco(
         max_samples: Maximum images to load (default 2000, matching BLINK scale)
         split: Override split name (default: use per-source defaults)
         seed: Shuffle seed. Defaults to the paper's DATA_SEED (1337).
+        allow_fallback: If true, try alternate COCO mirrors when the published
+            source is unavailable. Alternate mirrors do not reproduce the
+            paper fit. The CLI therefore defaults this to false and requires
+            an explicit `--allow-coco-fallback` opt-in.
 
     Returns:
         List of sample dicts with keys: prompt, images (list of PIL), answer
@@ -59,18 +69,25 @@ def load_coco(
 
     ds = None
     used_source = None
-    for ds_id, default_split, img_key in _COCO_SOURCES:
+    sources = _COCO_SOURCES if allow_fallback else _COCO_SOURCES[:1]
+    for ds_id, default_split, img_key in sources:
         use_split = split or default_split
+        revision = COCO_REVISION if ds_id == _COCO_SOURCES[0][0] else None
         try:
             print(f"    Trying {ds_id} (split={use_split})...")
-            ds = hf_load(ds_id, split=use_split, streaming=True)
+            ds = hf_load(
+                ds_id,
+                split=use_split,
+                streaming=True,
+                revision=revision,
+            )
             # Verify we can iterate (catches lazy errors)
             peek = next(iter(ds))
             if peek.get(img_key) is None:
                 print(f"    ⚠ {ds_id}: no '{img_key}' field, skipping")
                 ds = None
                 continue
-            used_source = (ds_id, use_split, img_key)
+            used_source = (ds_id, use_split, img_key, revision)
             print(f"    ✓ Using {ds_id}")
             break
         except Exception as e:
@@ -79,13 +96,19 @@ def load_coco(
             continue
 
     if ds is None:
-        print("    ⚠ All COCO sources failed")
+        scope = "published COCO source" if not allow_fallback else "all COCO sources"
+        print(f"    ⚠ {scope} failed")
         return []
 
-    ds_id, use_split, img_key = used_source
+    ds_id, use_split, img_key, revision = used_source
     samples = []
     # Re-load to reset the iterator (we consumed one item in the peek)
-    ds = hf_load(ds_id, split=use_split, streaming=True)
+    ds = hf_load(
+        ds_id,
+        split=use_split,
+        streaming=True,
+        revision=revision,
+    )
     # Shuffle exactly as the published pipeline does. Without this the fit sees
     # the first N images in dataset order, which is a different sample and so a
     # different centroid set.
@@ -114,6 +137,10 @@ def load_coco(
             "prompt": "Describe what you see in this image.\nAnswer:",
             "images": [img.convert("RGB")],
             "answer": caption or "description",
+            "_source": ds_id,
+            "_split": use_split,
+            "_revision": revision,
+            "_shuffle_seed": seed,
         })
 
         if max_samples and len(samples) >= max_samples:

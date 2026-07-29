@@ -7,7 +7,7 @@ Phase 2 of the arXiv preparation. Re-runs all 7 models with a consistent
 protocol determined by the N×K scaling experiment:
 
   - N=2000 COCO images (flat grid shows no benefit from more)
-  - K=512 centroids (flat grid shows K doesn't matter much)
+  - K=256 centroids (flat grid shows K doesn't matter much)
   - α_cd configurable (default 1.0, pending validation from N×K script)
   - α_interp sweep: {0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8}
   - Segment ablation at α=0.4
@@ -50,6 +50,7 @@ from centroid_erasure.models import get_config, load_model, find_lm_layers, prep
 from centroid_erasure.eval_mcqa import get_choice_token_ids
 from centroid_erasure.eval_binary import get_binary_token_ids
 from centroid_erasure.data.utils import parse_mc_answer
+from centroid_erasure.data.coco import COCO_REVISION
 from centroid_erasure.constants import ALL_LETTERS
 
 # ── Protocol (determined by N×K scaling experiment) ──
@@ -236,7 +237,12 @@ def cache_and_fit(model, processor, model_name, lm_layers, device):
     text_cursor = 0
     n_cached = 0
 
-    ds = load_dataset("detection-datasets/coco", split="train", streaming=True)
+    ds = load_dataset(
+        "detection-datasets/coco",
+        split="train",
+        streaming=True,
+        revision=COCO_REVISION,
+    )
     ds = ds.shuffle(seed=DATA_SEED, buffer_size=1000)
 
     t_start = time.time()

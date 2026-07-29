@@ -108,6 +108,27 @@ def test_registry_has_no_duplicate_model_ids():
     assert not dupes, f"duplicate model_ids: {dupes}"
 
 
+def test_shipped_model_configs_use_the_pinned_transformers_decoder_paths():
+    """Paper models should not depend on the broad ModuleList fallback.
+
+    These paths were checked against metadata-only model instances under the
+    pinned transformers==5.4.0 API. A stale path can otherwise resolve a vision
+    stack instead of the language decoder after an architecture refactor.
+    """
+    expected = {
+        "qwen": "model.language_model.layers",
+        "qwen_3b": "model.language_model.layers",
+        "qwen3": "model.language_model.layers",
+        "qwen3_4b": "model.language_model.layers",
+        "internvl": "model.language_model.layers",
+        "llava_ov": "model.language_model.layers",
+        "idefics3": "model.text_model.layers",
+    }
+    for name, path in expected.items():
+        assert MODEL_REGISTRY[name].lm_layer_path == path
+        assert re.fullmatch(r"[0-9a-f]{40}", MODEL_REGISTRY[name].revision)
+
+
 # ── shared constants ──
 
 

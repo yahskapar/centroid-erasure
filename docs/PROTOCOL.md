@@ -6,14 +6,19 @@ Everything needed to compare a run against the published one.
 
 | Setting | Value |
 |---|---|
-| Source data | MS-COCO, streamed from the `detection-datasets/coco` **train** split and shuffled with the data seed. Held out from the evaluation benchmarks: zero overlap with BLINK. |
+| Source data | MS-COCO, streamed from `detection-datasets/coco` revision `cf0b22332314a937e9dc8a1957b21725430bb41d`, **train** split, and shuffled with the data seed. Held out from the evaluation benchmarks: zero overlap with BLINK. |
 | Images | N = 2,000 |
 | Clusters | K = 256 |
 | Text harvest layer | L12 |
 | Visual harvest layer | L16 |
 | Data seed | 1337 |
 | K-means seed | 42 |
-| Backend | `faiss-gpu` when available, else `sklearn.MiniBatchKMeans` |
+| Backend | `faiss-gpu` when a FAISS GPU is visible, else `sklearn.MiniBatchKMeans` |
+
+The fitting CLI will not silently switch sources: alternate COCO mirrors require
+`--allow-coco-fallback`, and their banks are not paper reproductions. Newly
+fitted banks embed source/revision, model/revision, layers, prompt, package
+versions, seeds, backend, and span-fallback counts as JSON metadata.
 
 K = 256 and N = 2,000 come from a 30-cell N x K scaling grid. The signal is
 essentially flat across N in [1K, 50K] and K in [128, 2048] (mean best delta
@@ -82,6 +87,14 @@ benchmark's own taxonomy.
 
 ## Reproducibility notes
 
+* **Immutable upstream inputs.** The seven model commits and the BLINK/COCO
+  dataset commits are recorded in `centroids/MANIFEST.json` and used by the
+  loaders. The exact Python package versions are recorded there and in
+  `requirements.txt`; this includes preprocessing packages, not just torch and
+  transformers. One historical exception is explicit in the manifest: the
+  original fit's `faiss-gpu` package version was not logged. This does not
+  affect evaluation with the shipped banks, but byte-identical refitting is not
+  claimed.
 * **`faiss` vs `sklearn`** produce different centers. Runs are comparable
   within a backend, not necessarily across.
 * **Prompt-context sensitivity.** Centroids harvested under a different prompt

@@ -7,6 +7,7 @@ downstream number moves without anything crashing, so they are pinned here.
 import numpy as np
 import pytest
 import torch
+import torch.nn as nn
 
 from centroid_erasure import CentroidBank, CentroidReplacementHook
 from centroid_erasure.hooks import OPTION_BOUNDARY_FRAC, TEXT_SEGMENTS
@@ -111,6 +112,31 @@ def test_dimension_mismatch_is_skipped_rather_than_crashing():
     h, _ = make_hook(dim=16)
     wrong = torch.randn(1, 100, 32)  # bank is 16-wide
     assert torch.equal(h(None, None, wrong), wrong)
+
+
+def test_register_rejects_dimension_mismatch_before_a_forward(monkeypatch):
+    class FakeModel:
+        config = type("Config", (), {"hidden_size": 32})()
+
+    hook, _ = make_hook(dim=16)
+    hook.model = FakeModel()
+    with pytest.raises(ValueError, match="centroid width 16"):
+        hook.register()
+
+
+def test_register_rejects_negative_layer_indices(monkeypatch):
+    class FakeModel:
+        config = type("Config", (), {"hidden_size": 16})()
+
+    hook, _ = make_hook(dim=16)
+    hook.model = FakeModel()
+    hook.layer = -1
+    monkeypatch.setattr(
+        "centroid_erasure.models.find_lm_layers",
+        lambda model, config: nn.ModuleList([nn.Identity() for _ in range(2)]),
+    )
+    with pytest.raises(IndexError, match="out of range"):
+        hook.register()
 
 
 def test_alpha_one_leaves_the_hidden_state_untouched():

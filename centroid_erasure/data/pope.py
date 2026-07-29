@@ -15,6 +15,10 @@ from datasets import load_dataset as hf_load
 from typing import List, Optional
 
 
+POPE_REPO = "lmms-lab/POPE"
+POPE_REVISION = "4db1276663dfa5eb8ad16a52d24c31a09e470896"
+
+
 def load_pope(
     max_samples: Optional[int] = None,
     split: str = "test",
@@ -31,7 +35,7 @@ def load_pope(
             question, answer ('yes'/'no'), image (PIL), category
     """
     print(f"  Loading POPE ({split})...")
-    ds = hf_load("lmms-lab/POPE", split=split)
+    ds = hf_load(POPE_REPO, split=split, revision=POPE_REVISION)
 
     samples = []
     for item in ds:
