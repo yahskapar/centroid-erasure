@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs
+from centroid_erasure.eval_mcqa import get_choice_token_ids
+from centroid_erasure.eval_binary import get_binary_token_ids
+from centroid_erasure.data.utils import parse_mc_answer
+from protocol_snapshot.latent_factor_cd import ALL_LETTERS
+
+# ── Protocol (matching cross_model_sweep_v2) ──
+ALPHA_CD = 1.0
+SWEEP_ALPHAS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+DATA_SEED = 1337
+KMEANS_SEED = 42
+MAX_IMAGES = 2000
+K = 256
+TEXT_LAYER = 12
+
+ALL_MODELS = ["qwen", "qwen_3b", "qwen3", "qwen3_4b",
+              "internvl", "llava_ov", "idefics3"]
+
+PHASE2_DIR = Path("results/cross_model_v2_20260407_144343")
+
+
+def numpy_safe(obj):
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    raise TypeError(f"Not serializable: {type(obj)}")
+
+
+def wilson_ci(n_correct, n_total, z=1.96):
+    if n_total == 0:
+        return 0.0, 0.0, 0.0
+    p = n_correct / n_total
+    denom = 1 + z**2 / n_total
+    center = (p + z**2 / (2 * n_total)) / denom
+    spread = z * np.sqrt(p * (1 - p) / n_total + z**2 / (4 * n_total**2)) / denom
+    return center, max(0, center - spread), min(1, center + spread)
+
+
+# ── Benchmark loaders ──
+
+def load_cvbench():
+    """Load CV-Bench. Returns dict of task_name → list of standardized samples."""
+    from centroid_erasure.data.cvbench import load_cvbench as _load
+    raw = _load(max_samples=99999)
+    samples_by_task = {}
+    for cat, slist in raw.items():
+        task_name = f"CVBench_{cat}"
+        standardized = []
+        for s in slist:
+            # Build prompt with choices
+            choices = s["choices"]
+            n_choices = len(choices)
+            letters = list("ABCDEFGH")[:n_choices]
+            options_str = "\n".join(f"({l}) {c}" for l, c in zip(letters, choices))
+            prompt = f"{s['question']}\n{options_str}\nAnswer:"
+
+            # Parse answer: "(A)" → "A"
+            answer = s["answer"].strip("()")
+
+            standardized.append({
+                "prompt": prompt,
+                "images": [s["image"]],
+                "answer": answer,
+                "_n_choices": n_choices,
+            })
+        samples_by_task[task_name] = standardized
+        print(f"    {task_name}: {len(standardized)} samples ({n_choices}-choice)")
+    return samples_by_task
+
+
+def load_mmstar():
+    """Load MMStar. Returns dict with single task."""
+    from datasets import load_dataset
+    ds = load_dataset("Lin-Chen/MMStar", split="val")
+    samples = []
+    for item in ds:
+        # Question already contains "Options: A: ..., B: ..., C: ..., D: ..."
+        prompt = item["question"] + "\nAnswer:"
+        samples.append({
+            "prompt": prompt,
+            "images": [item["image"]],
+            "answer": item["answer"],  # bare "A", "B", etc.
+            "_n_choices": 4,
+            "_category": item.get("category", ""),
+            "_l2_category": item.get("l2_category", ""),
+        })
+    print(f"    MMStar: {len(samples)} samples (4-choice)")
+    return {"MMStar": samples}
+
+
+def load_mmvp_benchmark():
+    """Load MMVP. Returns dict with single task."""
+    from centroid_erasure.data.mmvp import load_mmvp
+    raw = load_mmvp()
+    samples = []
+    for s in raw:
+        samples.append({
+            "prompt": s["prompt"],
+            "images": s.get("images", [s["image"]]),
+            "answer": s["answer"],  # bare "A" or "B"
+            "_n_choices": 2,
+        })
+    print(f"    MMVP: {len(samples)} samples (2-choice)")
+    return {"MMVP": samples}
+
+
+# ── Centroid + Hook classes (same as cross_model_sweep_v2) ──
+
+class KMeansCentroids:
+    def __init__(self, centers):
+        self.mu = (torch.tensor(centers, dtype=torch.float32)
+                   if isinstance(centers, np.ndarray) else centers)
+        self._device = None
+
+    def to_device(self, device):
+        if self._device != device:
+            self.mu = self.mu.to(device)
+            self._device = device
+
+    def replace(self, x, alpha_interp=0.0):
+        self.to_device(x.device)
+        dists = torch.cdist(x.unsqueeze(0), self.mu.unsqueeze(0))[0]
+        k_idx = dists.argmin(dim=1)
+        mu_k = self.mu[k_idx]
+        return mu_k + alpha_interp * (x - mu_k)
+
+
+class TextCDHook:
+    def __init__(self, mfa, model_name, processor, alpha_interp=0.4):
+        self.mfa = mfa
+        self.model_name = model_name
+        self.processor = processor
+        self.alpha_interp = alpha_interp
+        self._input_ids = None
+
+    def set_input(self, input_ids):
+        self._input_ids = input_ids
+
+    def __call__(self, module, input, output):
+        from centroid_erasure.visual_tokens import find_visual_token_range
+        h = output[0] if isinstance(output, tuple) else output
+        h = h.clone()
+        dtype, device = h.dtype, h.device
+        seq_len = h.shape[1]
+
+        try:
+            _, vis_end = find_visual_token_range(
+                self.model_name, self._input_ids, h, self.processor)
+        except Exception:
+            vis_end = max(int(seq_len * 0.7), seq_len - 100)
+
+        start, end = vis_end, seq_len
+        if end <= start or end - start < 2:
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+
+        self.mfa.to_device(device)
+        tokens = h[0, start:end, :].float()
+        if tokens.shape[1] != self.mfa.mu.shape[1]:
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+        replaced = self.mfa.replace(tokens, self.alpha_interp)
+        h[0, start:end, :] = replaced.to(dtype)
+        return (h,) + output[1:] if isinstance(output, tuple) else h
+
+
+# ── Evaluation ──
+
+def evaluate_benchmark(model, processor, model_name, lm_layers, device,
+                       text_mfa, samples, task_name, text_layer=12):
+    """Run alpha sweep on a single benchmark task. Returns results dict."""
+
+    # Detect answer format
+    sample0 = samples[0]
+    nc = sample0.get("_n_choices", 4)
+    test_answer = str(sample0.get("answer", "A")).strip()
+    is_binary = test_answer.lower() in ("yes", "no")
+
+    letters = ALL_LETTERS[:nc]
+    cids = get_choice_token_ids(processor, letters)
+    bids = get_binary_token_ids(processor)
+
+    def get_pred(logits):
+        if is_binary:
+            yn = max((logits[t].item() for t in bids["yes"]), default=-1e9)
+            nn = max((logits[t].item() for t in bids["no"]), default=-1e9)
+            return "yes" if yn > nn else "no"
+        else:
+            cl = {l: logits[cids[l]].item() for l in letters if l in cids}
+            return max(cl, key=cl.get) if cl else "?"
+
+    alpha_results = {a: {"correct": 0, "total": 0} for a in SWEEP_ALPHAS}
+    suf_text = {"correct": 0, "total": 0}
+    baseline_correct = 0
+    total = 0
+
+    n_samples = len(samples)
+    t_start = time.time()
+
+    for si, sample in enumerate(samples):
+        prompt = sample.get("prompt", sample.get("question", ""))
+        images = sample.get("images", [sample["image"]] if sample.get("image") else [])
+        if not images:
+            continue
+
+        try:
+            inputs, _ = prepare_inputs(model_name, processor, prompt, images, device)
+        except Exception:
+            continue
+
+        input_ids = inputs.get("input_ids")
+        gt = str(sample.get("answer", "")).strip()
+        if not is_binary:
+            gt = parse_mc_answer(gt)
+
+        # Baseline
+        try:
+            with torch.no_grad():
+                out_n = model(**inputs)
+            logits_n = out_n.logits[0, -1, :].float()
+            del out_n
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            torch.cuda.empty_cache()
+            continue
+
+        pred_bl = get_pred(logits_n)
+        total += 1
+        if pred_bl == gt:
+            baseline_correct += 1
+
+        # Text centroid sufficiency (α_interp=0)
+        if text_mfa is not None:
+            hook = TextCDHook(text_mfa, model_name, processor, alpha_interp=0.0)
+            hook.set_input(input_ids)
+            handle = lm_layers[text_layer].register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    out_t = model(**inputs)
+                pred_text = get_pred(out_t.logits[0, -1, :].float())
+                del out_t
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pred_text = pred_bl
+            handle.remove()
+
+            suf_text["total"] += 1
+            if pred_text == gt:
+                suf_text["correct"] += 1
+
+        # Alpha sweep
+        for alpha in SWEEP_ALPHAS:
+            hook = TextCDHook(text_mfa, model_name, processor, alpha_interp=alpha)
+            hook.set_input(input_ids)
+            handle = lm_layers[text_layer].register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    out_e = model(**inputs)
+                logits_e = out_e.logits[0, -1, :].float()
+                logits_cd = logits_n + ALPHA_CD * (logits_n - logits_e)
+                pred_cd = get_pred(logits_cd)
+                del out_e
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pred_cd = pred_bl
+            handle.remove()
+
+            alpha_results[alpha]["total"] += 1
+            if pred_cd == gt:
+                alpha_results[alpha]["correct"] += 1
+
+        del logits_n, inputs
+        if total % 50 == 0:
+            torch.cuda.empty_cache()
+            elapsed = time.time() - t_start
+            rate = total / elapsed if elapsed > 0 else 0
+            eta = (n_samples - si - 1) / rate / 60 if rate > 0 else 0
+            print(f"      {task_name}: {si+1}/{n_samples} "
+                  f"[{rate:.1f} samp/s, ~{eta:.0f}min left]", flush=True)
+
+    # Compile results
+    bl_acc = baseline_correct / total if total > 0 else 0
+    _, bl_lo, bl_hi = wilson_ci(baseline_correct, total)
+
+    text_acc = suf_text["correct"] / suf_text["total"] if suf_text["total"] > 0 else bl_acc
+    text_cost = bl_acc - text_acc
+
+    alpha_compiled = {}
+    for alpha in SWEEP_ALPHAS:
+        ar = alpha_results[alpha]
+        cd_acc = ar["correct"] / ar["total"] if ar["total"] > 0 else 0
+        _, cd_lo, cd_hi = wilson_ci(ar["correct"], ar["total"])
+        alpha_compiled[str(alpha)] = {
+            "cd_accuracy": round(cd_acc, 4),
+            "cd_ci": [round(cd_lo, 4), round(cd_hi, 4)],
+            "delta": round(cd_acc - bl_acc, 4),
+            "n": ar["total"],
+        }
+
+    best_entry = max(alpha_compiled.items(), key=lambda x: x[1]["delta"])
+
+    result = {
+        "baseline": round(bl_acc, 4),
+        "baseline_ci": [round(bl_lo, 4), round(bl_hi, 4)],
+        "text_centroid_cost": round(text_cost, 4),
+        "n": total,
+        "alphas": alpha_compiled,
+        "best_alpha": best_entry[0],
+        "best_delta": best_entry[1]["delta"],
+        "fixed_delta": alpha_compiled.get("0.4", {}).get("delta", 0),
+    }
+
+    eval_time = time.time() - t_start
+    print(f"    {task_name:<20s} n={total:>5d}  bl={bl_acc:.3f}  "
+          f"text_cost={text_cost:+.3f}  best_α={best_entry[0]} "
+          f"Δ={best_entry[1]['delta']:+.4f}  ({eval_time/60:.1f}min)")
+
+    return result
+
+
+# ── Main ──
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="CV-Bench + MMStar + MMVP benchmark sweep")
+    parser.add_argument("--models", type=str, default=",".join(ALL_MODELS))
+    parser.add_argument("--benchmarks", type=str, default="cvbench,mmstar,mmvp",
+                        help="Comma-separated benchmarks to run")
+    parser.add_argument("--resume_from", type=str, default=None)
+    parser.add_argument("--sanity", action="store_true",
+                        help="Just test loaders, no GPU. ~1 min.")
+    args = parser.parse_args()
+
+    models = args.models.split(",")
+    benchmarks = args.benchmarks.split(",")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if args.resume_from:
+        out_dir = Path(args.resume_from)
+    else:
+        out_dir = Path(f"results/benchmark_sweep_{timestamp}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Sanity mode: just test loaders ──
+    if args.sanity:
+        print("*** SANITY CHECK — loader test only ***\n")
+        if "cvbench" in benchmarks:
+            print("  Loading CV-Bench...")
+            try:
+                cv = load_cvbench()
+                for k, v in cv.items():
+                    s = v[0]
+                    print(f"    {k}: {len(v)} samples, answer={s['answer']}, "
+                          f"n_choices={s['_n_choices']}, prompt={s['prompt'][:60]}...")
+                print("    CV-Bench: OK")
+            except Exception as e:
+                print(f"    CV-Bench: FAILED — {e}")
+
+        if "mmstar" in benchmarks:
+            print("\n  Loading MMStar...")
+            try:
+                mm = load_mmstar()
+                s = mm["MMStar"][0]
+                print(f"    {len(mm['MMStar'])} samples, answer={s['answer']}, "
+                      f"prompt={s['prompt'][:60]}...")
+                print("    MMStar: OK")
+            except Exception as e:
+                print(f"    MMStar: FAILED — {e}")
+
+        if "mmvp" in benchmarks:
+            print("\n  Loading MMVP...")
+            try:
+                mv = load_mmvp_benchmark()
+                s = mv["MMVP"][0]
+                print(f"    {len(mv['MMVP'])} samples, answer={s['answer']}, "
+                      f"prompt={s['prompt'][:60]}...")
+                print("    MMVP: OK")
+            except Exception as e:
+                print(f"    MMVP: FAILED — {e}")
+
+        print("\n*** All loaders checked. Run without --sanity for full evaluation. ***")
+        return
+
+    # ── Full run ──
+    print(f"{'='*65}")
+    print(f"  Benchmark Sweep (CV-Bench + MMStar + MMVP)")
+    print(f"{'='*65}")
+    print(f"  Models:     {models}")
+    print(f"  Benchmarks: {benchmarks}")
+    print(f"  Protocol:   K={K}, α_cd={ALPHA_CD}")
+    print(f"  Centroids:  from {PHASE2_DIR}")
+    print(f"  Output:     {out_dir}")
+    print()
+
+    # Load benchmark data once
+    all_benchmarks = {}
+    if "cvbench" in benchmarks:
+        print("Loading CV-Bench...")
+        all_benchmarks.update(load_cvbench())
+    if "mmstar" in benchmarks:
+        print("Loading MMStar...")
+        all_benchmarks.update(load_mmstar())
+    if "mmvp" in benchmarks:
+        print("Loading MMVP...")
+        all_benchmarks.update(load_mmvp_benchmark())
+
+    # Save config
+    config = {
+        "models": models,
+        "benchmarks": benchmarks,
+        "tasks": list(all_benchmarks.keys()),
+        "alpha_cd": ALPHA_CD,
+        "K": K,
+        "text_layer": TEXT_LAYER,
+        "centroids_from": str(PHASE2_DIR),
+    }
+    with open(out_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2)
+
+    t_start = time.time()
+
+    for model_name in models:
+        # Check resume
+        out_path = out_dir / f"{model_name}_benchmarks.json"
+        if out_path.exists():
+            print(f"\n  {model_name} — already done, skipping")
+            continue
+
+        print(f"\n{'='*65}")
+        print(f"  Model: {model_name}")
+        print(f"{'='*65}")
+
+        # Load model
+        try:
+            cfg = get_config(model_name)
+            model, processor, _ = load_model(model_name)
+            lm_layers = find_lm_layers(model, cfg)
+        except Exception as e:
+            print(f"  ERROR loading {model_name}: {e}")
+            import traceback; traceback.print_exc()
+            continue
+
+        n_layers = len(lm_layers)
+        text_layer = TEXT_LAYER if n_layers > TEXT_LAYER else max(1, int(n_layers * 0.4))
+
+        # Load centroids from Phase 2
+        centroid_path = PHASE2_DIR / f"{model_name}_centroids.npz"
+        if centroid_path.exists():
+            centroid_data = np.load(centroid_path)
+            text_mfa = KMeansCentroids(centroid_data["text_centroids"])
+            print(f"  Loaded centroids from {centroid_path}")
+        else:
+            print(f"  WARNING: no centroids at {centroid_path}, skipping")
+            del model, processor
+            gc.collect(); torch.cuda.empty_cache()
+            continue
+
+        # Run each benchmark
+        model_results = {}
+        for task_name, samples in all_benchmarks.items():
+            print(f"\n  Evaluating {task_name} ({len(samples)} samples)...")
+            result = evaluate_benchmark(
+                model, processor, model_name, lm_layers, device,
+                text_mfa, samples, task_name, text_layer=text_layer)
+            model_results[task_name] = result
+
+        # Summary
+        all_best = [v["best_delta"] for v in model_results.values()]
+        all_fixed = [v["fixed_delta"] for v in model_results.values()]
+        all_text_cost = [v["text_centroid_cost"] for v in model_results.values()]
+        model_results["_summary"] = {
+            "mean_best_delta": round(float(np.mean(all_best)), 4),
+            "mean_fixed_delta": round(float(np.mean(all_fixed)), 4),
+            "mean_text_cost": round(float(np.mean(all_text_cost)), 4),
+        }
+
+        # Save
+        with open(out_path, "w") as f:
+            json.dump(model_results, f, indent=2, default=numpy_safe)
+        print(f"\n  Saved → {out_path}")
+
+        # Cleanup
+        del model, processor, text_mfa
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    elapsed = time.time() - t_start
+    print(f"\n{'='*65}")
+    print(f"  DONE — {elapsed/3600:.1f}h")
+    print(f"  Results → {out_dir}/")
+    print(f"{'='*65}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse, json, sys, time, warnings
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+import torch
+from scipy.stats import binomtest, chi2 as chi2_dist
+from PIL import Image
+
+warnings.filterwarnings("ignore")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs  # noqa
+from centroid_erasure.data.utils import parse_mc_answer  # noqa
+from centroid_erasure.data.blink import load_blink  # noqa
+from pipeline.paper_sweep import KMeansCentroids, TextCDHook  # noqa
+
+MODEL_KEY = "qwen"
+TEXT_LAYER = 12
+ALPHA_INTERP = 0.4
+ALPHA_CD = 1.0
+LETTERS = ["A", "B", "C", "D"]
+TASKS = ["Art_Style", "Counting", "Forensic_Detection",
+         "Relative_Depth", "Spatial_Relation", "Visual_Similarity"]
+PHASE2_CENTROID = REPO_ROOT / "results" / "cross_model_v2_20260407_144343" / "qwen_centroids.npz"
+# Tiny black placeholder for "no-image" condition (still goes through vision encoder)
+BLACK_PLACEHOLDER = Image.new("RGB", (224, 224), color=(0, 0, 0))
+
+
+def get_pred(logits, letter_ids):
+    return max(LETTERS, key=lambda L: logits[letter_ids[L]].item())
+
+
+def eval_condition(model, processor, lm_layers, text_mfa, samples,
+                   letter_ids, device, condition, log):
+    """condition: 'with_image' or 'no_image'.
+
+    Returns (aggregate_dict, per_sample_list). per_sample_list contains
+    {'sample_idx': int, 'bl_ok': bool, 'cd_ok': bool} for every sample
+    where BOTH forwards succeeded, enabling per-sample interaction
+    pairing across conditions.
+    """
+    bl_c = cd_c = n = 0
+    b = c = 0
+    per_sample = []
+    for sample_idx, sample in enumerate(samples):
+        gt = parse_mc_answer(sample["answer"])
+        if gt is None or gt not in LETTERS:
+            continue
+        images = sample["images"] if condition == "with_image" else [BLACK_PLACEHOLDER]
+        try:
+            inputs, _ = prepare_inputs(MODEL_KEY, processor, sample["prompt"], images, device)
+        except Exception:
+            continue
+        input_ids = inputs["input_ids"]
+        with torch.no_grad():
+            out_n = model(**inputs)
+        logits_n = out_n.logits[0, -1, :].float()
+        pred_bl = get_pred(logits_n, letter_ids)
+        hook = TextCDHook(text_mfa, MODEL_KEY, processor, alpha_interp=ALPHA_INTERP, segment="all")
+        hook.set_input(input_ids)
+        handle = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+        try:
+            with torch.no_grad():
+                out_e = model(**inputs)
+            logits_e = out_e.logits[0, -1, :].float()
+            logits_cd = logits_n + ALPHA_CD * (logits_n - logits_e)
+            pred_cd = get_pred(logits_cd, letter_ids)
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            torch.cuda.empty_cache()
+            pred_cd = pred_bl  # OOM/runtime fallback: CD = no-op for this sample
+        finally:
+            handle.remove()
+        bl_ok = (pred_bl == gt)
+        cd_ok = (pred_cd == gt)
+        n += 1
+        bl_c += int(bl_ok); cd_c += int(cd_ok)
+        if bl_ok and not cd_ok: b += 1
+        elif not bl_ok and cd_ok: c += 1
+        per_sample.append({"sample_idx": sample_idx, "bl_ok": bl_ok, "cd_ok": cd_ok})
+        del out_n, out_e
+        if n % 25 == 0:
+            torch.cuda.empty_cache()
+    if n == 0:
+        return None, []
+    p = binomtest(min(b, c), b + c, p=0.5).pvalue if (b + c) > 0 else 1.0
+    aggregate = {"n": n, "baseline": bl_c / n, "cd": cd_c / n,
+                 "delta": (cd_c - bl_c) / n, "b": b, "c": c, "mcnemar_p": p}
+    return aggregate, per_sample
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true")
+    args = ap.parse_args()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_text_only_blink_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "text_only_blink_log.txt"
+    log_file = open(log_path, "a", buffering=1)
+    def log(m):
+        print(m); log_file.write(m + "\n")
+
+    log(f"=== rebuttal_text_only_blink ({ts}) ===")
+    cfg = get_config(MODEL_KEY)
+    model, processor, _ = load_model(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    text_mfa = KMeansCentroids(np.load(PHASE2_CENTROID)["text_centroids"])
+    log(f"Loaded {MODEL_KEY}")
+    device = next(model.parameters()).device
+    letter_ids = {}
+    for L in LETTERS:
+        ids = processor.tokenizer.encode(f" {L}", add_special_tokens=False)
+        assert len(ids) == 1, (
+            f"Letter '{L}' tokenizes to {len(ids)} tokens ({ids}) — "
+            f"single-token assumption violated; CD scoring would silently break"
+        )
+        letter_ids[L] = ids[0]
+
+    max_per_task = 8 if args.sanity else None
+    blink_data = load_blink(tasks=TASKS, split="val", max_per_task=max_per_task)
+
+    summary = {"config": {"model": MODEL_KEY, "alpha_interp": ALPHA_INTERP},
+               "per_task": {}}
+    # Pooled per-sample interaction records across all tasks for the
+    # high-power sample-level test (n ~ 800 vs n=6 across-task Wilcoxon).
+    pooled_interactions = []  # list of ints in {-2,-1,0,+1,+2}
+    for task in TASKS:
+        samples = blink_data.get(task, [])
+        if not samples:
+            continue
+        log(f"\n── {task} ──")
+        with_r, with_ps = eval_condition(model, processor, lm_layers, text_mfa, samples,
+                                          letter_ids, device, "with_image", log)
+        no_r, no_ps = eval_condition(model, processor, lm_layers, text_mfa, samples,
+                                      letter_ids, device, "no_image", log)
+        summary["per_task"][task] = {"with_image": with_r, "no_image": no_r}
+        # Per-sample interaction pairing by sample_idx (only samples where
+        # BOTH conditions succeeded contribute to the interaction test).
+        no_lookup = {r["sample_idx"]: r for r in no_ps}
+        paired_n = 0
+        for w in with_ps:
+            no_match = no_lookup.get(w["sample_idx"])
+            if no_match is None:
+                continue
+            w_eff = int(w["cd_ok"]) - int(w["bl_ok"])
+            n_eff = int(no_match["cd_ok"]) - int(no_match["bl_ok"])
+            pooled_interactions.append(w_eff - n_eff)
+            paired_n += 1
+        if paired_n:
+            log(f"  paired-samples for interaction: {paired_n}")
+        if with_r and no_r:
+            log(f"  WITH:    n={with_r['n']}  bl={with_r['baseline']:.4f}  cd={with_r['cd']:.4f}  Δ={with_r['delta']:+.4f}  p={with_r['mcnemar_p']:.4f}")
+            log(f"  NO-IMG:  n={no_r['n']}  bl={no_r['baseline']:.4f}  cd={no_r['cd']:.4f}  Δ={no_r['delta']:+.4f}  p={no_r['mcnemar_p']:.4f}")
+            log(f"  Δ_with − Δ_without = {(with_r['delta'] - no_r['delta']):+.4f}")
+        with open(out_dir / "text_only_blink_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+
+    # 2×2 cell-mean interaction (descriptive) + paired Wilcoxon (headline test).
+    # Per Favero M3ID (CVPR 2024) / Leng VCD (CVPR 2024) blank-image proxy.
+    tasks_done = list(summary["per_task"].keys())
+    if tasks_done:
+        # Collect 4-cell counts per task
+        # Cell counts: (image_status, tccd_status) → accuracy
+        cells = {("with", "bl"): [], ("with", "cd"): [],
+                 ("no", "bl"): [], ("no", "cd"): []}
+        for task in tasks_done:
+            w = summary["per_task"][task]["with_image"]
+            ni = summary["per_task"][task]["no_image"]
+            if w and ni:
+                cells[("with", "bl")].append(w["baseline"])
+                cells[("with", "cd")].append(w["cd"])
+                cells[("no", "bl")].append(ni["baseline"])
+                cells[("no", "cd")].append(ni["cd"])
+        # Mean accuracies
+        m = {k: float(np.mean(v)) for k, v in cells.items() if v}
+        # Interaction term: TCCD-effect-given-image MINUS TCCD-effect-given-no-image
+        tccd_effect_with = m[("with", "cd")] - m[("with", "bl")]
+        tccd_effect_no = m[("no", "cd")] - m[("no", "bl")]
+        interaction = tccd_effect_with - tccd_effect_no
+        # Bootstrap p for interaction effect across 6 tasks
+        from scipy.stats import wilcoxon
+        with_deltas = np.array([summary["per_task"][t]["with_image"]["delta"] for t in tasks_done])
+        no_deltas = np.array([summary["per_task"][t]["no_image"]["delta"] for t in tasks_done])
+        if len(with_deltas) >= 3:
+            try:
+                stat, p_wilcoxon = wilcoxon(with_deltas, no_deltas, alternative="greater")
+            except Exception:
+                p_wilcoxon = float("nan")
+        else:
+            p_wilcoxon = float("nan")
+
+        # Per-sample interaction (HIGH-POWER headline test, n ~ 800).
+        # Score per sample = (cd_ok_with - bl_ok_with) - (cd_ok_no - bl_ok_no)
+        #                  ∈ {-2,-1,0,+1,+2}. Positive means TCCD helps MORE
+        # on informative image than on blank image — supports visual-grounding
+        # hypothesis. Two tests:
+        #   (i) sign test on n_positive vs n_negative (ignoring ties)
+        #  (ii) Wilcoxon signed-rank on the integer scores (handles ties)
+        interaction_arr = np.array(pooled_interactions, dtype=int) if pooled_interactions else np.array([], dtype=int)
+        n_total_int = int(interaction_arr.size)
+        n_pos = int((interaction_arr > 0).sum())
+        n_neg = int((interaction_arr < 0).sum())
+        n_zero = int((interaction_arr == 0).sum())
+        if n_pos + n_neg > 0:
+            p_sign = float(binomtest(n_pos, n_pos + n_neg, p=0.5,
+                                     alternative="greater").pvalue)
+        else:
+            p_sign = float("nan")
+        if n_total_int >= 10 and (interaction_arr != 0).any():
+            try:
+                from scipy.stats import wilcoxon as _wilc
+                _, p_wilcoxon_ps = _wilc(interaction_arr, alternative="greater")
+                p_wilcoxon_ps = float(p_wilcoxon_ps)
+            except Exception:
+                p_wilcoxon_ps = float("nan")
+        else:
+            p_wilcoxon_ps = float("nan")
+
+        summary["interaction"] = {
+            "tccd_effect_with_image": tccd_effect_with,
+            "tccd_effect_no_image": tccd_effect_no,
+            "interaction_term": interaction,
+            "p_wilcoxon_one_sided_across_task": float(p_wilcoxon) if not np.isnan(p_wilcoxon) else None,
+            "n_tasks": len(tasks_done),
+            "cell_means": {f"{k[0]}_{k[1]}": v for k, v in m.items()},
+            "per_sample_interaction": {
+                "n_paired": n_total_int,
+                "n_positive": n_pos,
+                "n_negative": n_neg,
+                "n_zero": n_zero,
+                "mean_score": float(np.mean(interaction_arr)) if n_total_int else None,
+                "p_sign_one_sided": p_sign,
+                "p_wilcoxon_one_sided": p_wilcoxon_ps,
+            },
+        }
+        with open(out_dir / "text_only_blink_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+        # Benjamini-Hochberg FDR across 6 per-task McNemar p-values
+        per_task_p = []
+        for task in tasks_done:
+            w = summary["per_task"][task]["with_image"]
+            if w and w.get("mcnemar_p") is not None:
+                per_task_p.append((task, w["mcnemar_p"]))
+        bh_q = {}
+        if per_task_p:
+            sorted_p = sorted(per_task_p, key=lambda tp: tp[1])
+            mtests = len(sorted_p)
+            for rank, (task, p) in enumerate(sorted_p, 1):
+                q = p * mtests / rank
+                bh_q[task] = float(min(q, 1.0))
+
+        with open(out_dir / "text_only_blink_readout.txt", "w") as f:
+            f.write(f"Image × TCCD on BLINK ({ts})\n")
+            f.write(f"Note: 'image-uninformative' uses a 224×224 black-image proxy\n")
+            f.write(f"      (vision tower still fires; standard VL-CD framing per\n")
+            f.write(f"       Wang NAACL 2024 / Favero CVPR 2024).\n\n")
+            f.write(f"{'Task':<22s}{'Δ_inform':>10s}{'Δ_uninfo':>12s}{'Diff':>10s}{'McN p':>10s}{'BH q':>10s}\n")
+            for task in tasks_done:
+                w = summary["per_task"][task]["with_image"]
+                ni = summary["per_task"][task]["no_image"]
+                if w and ni:
+                    q = bh_q.get(task, float('nan'))
+                    f.write(f"{task:<22s}{w['delta']:+10.4f}{ni['delta']:+12.4f}"
+                            f"{(w['delta']-ni['delta']):+10.4f}{w['mcnemar_p']:10.4f}{q:10.4f}\n")
+            f.write(f"\nCELL MEANS:\n")
+            f.write(f"  (informative-image,   baseline) = {m[('with','bl')]:.4f}\n")
+            f.write(f"  (informative-image,   +TCCD)    = {m[('with','cd')]:.4f}\n")
+            f.write(f"  (uninformative-image, baseline) = {m[('no','bl')]:.4f}\n")
+            f.write(f"  (uninformative-image, +TCCD)    = {m[('no','cd')]:.4f}\n\n")
+            f.write(f"TCCD effect | informative image   = {tccd_effect_with:+.4f}\n")
+            f.write(f"TCCD effect | uninformative image = {tccd_effect_no:+.4f}\n")
+            f.write(f"Cell-mean interaction (Δ_inf−Δ_uninf) = {interaction:+.4f}\n\n")
+            f.write("STATISTICAL TESTS:\n")
+            f.write(f"  Across-task Wilcoxon (n=6 tasks) p (greater) = {p_wilcoxon:.4f}\n")
+            f.write(f"  Per-sample sign test  (n={n_pos+n_neg} non-tied of "
+                    f"{n_total_int} total) p (greater) = {p_sign:.4f}  [HEADLINE]\n")
+            f.write(f"  Per-sample Wilcoxon (n={n_total_int}) p (greater) = {p_wilcoxon_ps:.4f}\n")
+            f.write(f"  Per-sample breakdown: +={n_pos}, 0={n_zero}, −={n_neg}\n\n")
+            f.write("INTERPRETATION:\n")
+            f.write("  Headline = per-sample sign test (Wei et al. EMNLP 2025-style\n")
+            f.write("  high-power paired test, n~800). Significant positive → TCCD's\n")
+            f.write("  effect REQUIRES visual content, refuting option-prior-correction\n")
+            f.write("  Null result means the TCCD effect is image-independent.\n")
+            f.write("  Across-task Wilcoxon (n=6) is the robustness check.\n")
+            f.write("  Per-task McNemar p-values are FDR-controlled with Benjamini-\n")
+            f.write("  Hochberg across the 6 BLINK tasks (BH q column).\n")
+        summary["bh_q_per_task"] = bh_q
+        with open(out_dir / "text_only_blink_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+    log("Done.")
+    log_file.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -15,7 +15,7 @@ _working/
 notes/
 
 # ---- Raw results and activation caches: not part of this release -----------
-results/
+/results/
 artifacts/
 repro_*/
 repro_smoke_*/

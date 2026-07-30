@@ -1,0 +1,243 @@
+{
+  "aggregate": {
+    "abcd": {
+      "asymmetry_ratio": 11.0,
+      "mean_baseline": 0.6504,
+      "mean_text_cost": 0.2354,
+      "mean_vis_cost": 0.0214
+    },
+    "npr": {
+      "asymmetry_ratio": 27.8,
+      "mean_baseline": 0.6143,
+      "mean_text_cost": 0.4976,
+      "mean_vis_cost": 0.0179
+    },
+    "symbols": {
+      "asymmetry_ratio": 341.6,
+      "mean_baseline": 0.4276,
+      "mean_text_cost": 0.3416,
+      "mean_vis_cost": 0.0
+    }
+  },
+  "config": {
+    "alpha_interp": 0.0,
+    "cap": null,
+    "conditions": [
+      "abcd",
+      "npr",
+      "symbols"
+    ],
+    "model": "qwen",
+    "sanity": false,
+    "tasks": [
+      "Art_Style",
+      "Counting",
+      "Forensic_Detection",
+      "Relative_Depth",
+      "Spatial_Relation",
+      "Visual_Similarity"
+    ],
+    "text_layer": 12,
+    "vis_layer": 16
+  },
+  "results": [
+    {
+      "baseline_acc": 0.5726,
+      "condition": "abcd",
+      "n": 117,
+      "parse_fail": 0,
+      "task": "Art_Style",
+      "text_centroid_acc": 0.4701,
+      "text_cost": 0.1026,
+      "vis_centroid_acc": 0.5299,
+      "vis_cost": 0.0427
+    },
+    {
+      "baseline_acc": 0.6417,
+      "condition": "abcd",
+      "n": 120,
+      "parse_fail": 0,
+      "task": "Counting",
+      "text_centroid_acc": 0.25,
+      "text_cost": 0.3917,
+      "vis_centroid_acc": 0.65,
+      "vis_cost": -0.0083
+    },
+    {
+      "baseline_acc": 0.4394,
+      "condition": "abcd",
+      "n": 132,
+      "parse_fail": 0,
+      "task": "Forensic_Detection",
+      "text_centroid_acc": 0.25,
+      "text_cost": 0.1894,
+      "vis_centroid_acc": 0.4318,
+      "vis_cost": 0.0076
+    },
+    {
+      "baseline_acc": 0.5887,
+      "condition": "abcd",
+      "n": 124,
+      "parse_fail": 0,
+      "task": "Relative_Depth",
+      "text_centroid_acc": 0.5,
+      "text_cost": 0.0887,
+      "vis_centroid_acc": 0.621,
+      "vis_cost": -0.0323
+    },
+    {
+      "baseline_acc": 0.8601,
+      "condition": "abcd",
+      "n": 143,
+      "parse_fail": 0,
+      "task": "Spatial_Relation",
+      "text_centroid_acc": 0.5385,
+      "text_cost": 0.3217,
+      "vis_centroid_acc": 0.8601,
+      "vis_cost": 0.0
+    },
+    {
+      "baseline_acc": 0.8,
+      "condition": "abcd",
+      "n": 135,
+      "parse_fail": 0,
+      "task": "Visual_Similarity",
+      "text_centroid_acc": 0.4815,
+      "text_cost": 0.3185,
+      "vis_centroid_acc": 0.6815,
+      "vis_cost": 0.1185
+    },
+    {
+      "baseline_acc": 0.5641,
+      "condition": "npr",
+      "n": 117,
+      "parse_fail": 0,
+      "task": "Art_Style",
+      "text_centroid_acc": 0.0085,
+      "text_cost": 0.5556,
+      "vis_centroid_acc": 0.5385,
+      "vis_cost": 0.0256
+    },
+    {
+      "baseline_acc": 0.6833,
+      "condition": "npr",
+      "n": 120,
+      "parse_fail": 0,
+      "task": "Counting",
+      "text_centroid_acc": 0.2417,
+      "text_cost": 0.4417,
+      "vis_centroid_acc": 0.675,
+      "vis_cost": 0.0083
+    },
+    {
+      "baseline_acc": 0.303,
+      "condition": "npr",
+      "n": 132,
+      "parse_fail": 0,
+      "task": "Forensic_Detection",
+      "text_centroid_acc": 0.2576,
+      "text_cost": 0.0455,
+      "vis_centroid_acc": 0.3106,
+      "vis_cost": -0.0076
+    },
+    {
+      "baseline_acc": 0.4919,
+      "condition": "npr",
+      "n": 124,
+      "parse_fail": 0,
+      "task": "Relative_Depth",
+      "text_centroid_acc": 0.0,
+      "text_cost": 0.4919,
+      "vis_centroid_acc": 0.4919,
+      "vis_cost": 0.0
+    },
+    {
+      "baseline_acc": 0.8881,
+      "condition": "npr",
+      "n": 143,
+      "parse_fail": 0,
+      "task": "Spatial_Relation",
+      "text_centroid_acc": 0.0,
+      "text_cost": 0.8881,
+      "vis_centroid_acc": 0.8811,
+      "vis_cost": 0.007
+    },
+    {
+      "baseline_acc": 0.7556,
+      "condition": "npr",
+      "n": 135,
+      "parse_fail": 0,
+      "task": "Visual_Similarity",
+      "text_centroid_acc": 0.1926,
+      "text_cost": 0.563,
+      "vis_centroid_acc": 0.6815,
+      "vis_cost": 0.0741
+    },
+    {
+      "baseline_acc": 0.4701,
+      "condition": "symbols",
+      "n": 117,
+      "parse_fail": 0,
+      "task": "Art_Style",
+      "text_centroid_acc": 0.0,
+      "text_cost": 0.4701,
+      "vis_centroid_acc": 0.4701,
+      "vis_cost": 0.0
+    },
+    {
+      "baseline_acc": 0.3167,
+      "condition": "symbols",
+      "n": 120,
+      "parse_fail": 0,
+      "task": "Counting",
+      "text_centroid_acc": 0.2583,
+      "text_cost": 0.0583,
+      "vis_centroid_acc": 0.3167,
+      "vis_cost": 0.0
+    },
+    {
+      "baseline_acc": 0.25,
+      "condition": "symbols",
+      "n": 132,
+      "parse_fail": 0,
+      "task": "Forensic_Detection",
+      "text_centroid_acc": 0.2576,
+      "text_cost": -0.0076,
+      "vis_centroid_acc": 0.25,
+      "vis_cost": 0.0
+    },
+    {
+      "baseline_acc": 0.5161,
+      "condition": "symbols",
+      "n": 124,
+      "parse_fail": 0,
+      "task": "Relative_Depth",
+      "text_centroid_acc": 0.0,
+      "text_cost": 0.5161,
+      "vis_centroid_acc": 0.5161,
+      "vis_cost": 0.0
+    },
+    {
+      "baseline_acc": 0.5385,
+      "condition": "symbols",
+      "n": 143,
+      "parse_fail": 0,
+      "task": "Spatial_Relation",
+      "text_centroid_acc": 0.0,
+      "text_cost": 0.5385,
+      "vis_centroid_acc": 0.5385,
+      "vis_cost": 0.0
+    },
+    {
+      "baseline_acc": 0.4741,
+      "condition": "symbols",
+      "n": 135,
+      "parse_fail": 0,
+      "task": "Visual_Similarity",
+      "text_centroid_acc": 0.0,
+      "text_cost": 0.4741,
+      "vis_centroid_acc": 0.4741,
+      "vis_cost": 0.0
+    }
+  ]
+}

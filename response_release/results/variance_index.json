@@ -1,0 +1,114 @@
+{
+  "status": "retained_descriptive_two_harnesses",
+  "model": "Qwen2.5-VL-7B",
+  "tasks": [
+    "Forensic_Detection",
+    "Visual_Similarity",
+    "Art_Style",
+    "Counting",
+    "Relative_Depth",
+    "Spatial_Relation"
+  ],
+  "post_hoc_groups": {
+    "text_competes": [
+      "Forensic_Detection",
+      "Visual_Similarity",
+      "Art_Style"
+    ],
+    "text_needed": [
+      "Counting",
+      "Relative_Depth",
+      "Spatial_Relation"
+    ]
+  },
+  "canonical_pipeline": {
+    "purpose": "Five refits varying only the K-means initialization seed on the primary fixed COCO subset.",
+    "data_seed": 1337,
+    "max_images": 2000,
+    "k": 256,
+    "backend": "faiss",
+    "text_layer": 12,
+    "alpha_cd": 1.0,
+    "fixed_alpha_interp": 0.4,
+    "kmeans_seeds": [
+      42,
+      800,
+      1337,
+      2024,
+      8320
+    ],
+    "primary_fit_alpha_source": "The per-task alpha values are frozen from the seed-42 fit; no alpha is reselected on the four refits."
+  },
+  "factorial_sensitivity_harness": {
+    "purpose": "Within-harness sensitivity over three shuffled COCO streams by five K-means initialization seeds.",
+    "data_seeds": [
+      1337,
+      42,
+      2024
+    ],
+    "kmeans_seeds": [
+      42,
+      800,
+      1337,
+      2024,
+      8320
+    ],
+    "max_images_per_data_seed": 2000,
+    "k": 512,
+    "backend": "scikit-learn MiniBatchKMeans",
+    "batch_size": 4096,
+    "n_init": 3,
+    "text_layer": 12,
+    "alpha_cd": 1.0,
+    "alpha_interp": 0.4,
+    "harvest_prompt": "Describe what you see in this image.\nAnswer:",
+    "interpretation": "The reported standard deviations are descriptive sensitivity summaries, not fitted factorial variance components."
+  },
+  "comparison_policy": "The K=256 faiss and K=512 scikit-learn results come from different implementations. Absolute deltas are not pooled or treated as replications; only variation within each harness is interpreted.",
+  "repository_files": [
+    {
+      "role": "canonical_primary_fit",
+      "kmeans_seed": 42,
+      "path": "demo/fixtures/qwen_expected.json",
+      "sha256": "974136e88c0aedcecd3186457c5e28c4f3b0463aa0f2c8fb162fd92e6a7a973d"
+    }
+  ],
+  "release_files": [
+    {
+      "role": "factorial_protocol_snapshot",
+      "path": "methods/centroid_variance_factorial.py.txt",
+      "sha256": "1165b055e16eaacb625cbb37a00a20802513d8827a9a333c37a458af3d3a703c"
+    }
+  ],
+  "files": [
+    {
+      "role": "canonical_refit",
+      "kmeans_seed": 800,
+      "path": "variance/canonical_seed_800.json",
+      "sha256": "f204e14e23740b8519aacf1280894ff9cd2e22464c5a222196ec834eb3bf81a7"
+    },
+    {
+      "role": "canonical_refit",
+      "kmeans_seed": 1337,
+      "path": "variance/canonical_seed_1337.json",
+      "sha256": "cebd52a7eea50fe57050e014374adba3beafe177f1dc9d58666d33b3aebedbd9"
+    },
+    {
+      "role": "canonical_refit",
+      "kmeans_seed": 2024,
+      "path": "variance/canonical_seed_2024.json",
+      "sha256": "7ba1cc320631119e3e49113f79740f73bd308d0a518a3a380b0d415c3b8b31aa"
+    },
+    {
+      "role": "canonical_refit",
+      "kmeans_seed": 8320,
+      "path": "variance/canonical_seed_8320.json",
+      "sha256": "b22552b3d0ff5a13878b2876b44a487b5b35b317e2e06ae909332210dc04fe7a"
+    },
+    {
+      "role": "factorial_sensitivity_grid",
+      "path": "variance/factorial_results.json",
+      "sha256": "f1d9145e0a9b1e4b683296e2c0d18376ec01bea57b83e742fc8e88cf14514863"
+    }
+  ]
+}

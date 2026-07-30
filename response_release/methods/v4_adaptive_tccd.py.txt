@@ -1,0 +1,672 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import math
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import (  # noqa: E402
+    get_config, load_model, find_lm_layers, prepare_inputs,
+)
+from centroid_erasure.eval_mcqa import get_choice_token_ids  # noqa: E402
+from centroid_erasure.data.utils import parse_mc_answer  # noqa: E402
+from centroid_erasure.data.blink import load_blink  # noqa: E402
+from protocol_snapshot.latent_factor_cd import ALL_LETTERS  # noqa: E402
+from pipeline.paper_sweep import (  # noqa: E402
+    KMeansCentroids, TextCDHook,
+)
+
+# ── Protocol constants (match paper's Qwen7B primary) ──
+DEFAULT_MODEL_KEY = "qwen"
+TEXT_LAYER = 12
+ALPHA_INTERP = 0.4
+ALPHA_CD = 1.0
+N_LETTERS = 4
+PHASE2_CENTROID_DIR = REPO_ROOT / "results" / "cross_model_v2_20260407_144343"
+
+
+def get_phase2_centroid_path(model_key):
+    """Locate the Phase 2 text-centroid .npz for `model_key`.
+
+    Falls back to Step 4 (`v4_multifamily_drift_20260420_003251/sweep/`)
+    for post-submission InternVL generations that weren't in Phase 2's
+    original 7-model sweep.
+    """
+    std = PHASE2_CENTROID_DIR / f"{model_key}_centroids.npz"
+    if std.exists():
+        return std
+    step4 = (REPO_ROOT / "results" / "v4_multifamily_drift_20260420_003251"
+             / "sweep" / f"{model_key}_centroids.npz")
+    if step4.exists():
+        return step4
+    return std  # return standard path; caller errors informatively if missing
+
+BLINK_TASKS = [
+    "Forensic_Detection", "Visual_Similarity", "Art_Style",
+    "Counting", "Relative_Depth", "Spatial_Relation",
+]
+
+# Policy sweep thresholds (fraction of samples to apply TCCD to).
+THRESHOLDS = [0.10, 0.25, 0.50, 0.75, 1.00]
+
+# Uncertainty signals. For each: higher score = more uncertain
+# (so top-t by score = t most uncertain samples).
+SIGNALS = ["entropy", "top2_margin", "ll_pred"]
+
+# Sanity constants
+SANITY_TASK = "Forensic_Detection"
+SANITY_N = 30
+
+
+def tee_print(msg, log_path=None):
+    print(msg, flush=True)
+    if log_path is not None:
+        with open(log_path, "a") as f:
+            f.write(msg + "\n")
+
+
+# ── Per-sample data collection ──
+
+def softmax(xs):
+    m = max(xs)
+    exps = [math.exp(x - m) for x in xs]
+    s = sum(exps)
+    return [e / s for e in exps]
+
+
+def compute_uncertainty_signals(letter_logits_bl):
+    """Return dict of {signal_name: uncertainty_score} (higher = more uncertain).
+
+    For top2_margin: returned value is NEGATIVE raw margin so higher-is-more-
+    uncertain convention holds across all signals.
+    """
+    probs = softmax(letter_logits_bl)
+    entropy = -sum(p * math.log(p + 1e-12) for p in probs)
+
+    sorted_logits = sorted(letter_logits_bl, reverse=True)
+    raw_margin = sorted_logits[0] - sorted_logits[1]
+    top2_margin_score = -raw_margin  # negate so higher = more uncertain
+
+    pred_idx = int(np.argmax(letter_logits_bl))
+    ll_pred = math.log(probs[pred_idx] + 1e-12)
+    ll_pred_score = -ll_pred  # negate so higher = more uncertain
+
+    return {
+        "entropy": entropy,
+        "top2_margin_raw": raw_margin,       # kept for debugging / display
+        "top2_margin": top2_margin_score,    # uncertainty score
+        "ll_pred_raw": ll_pred,              # kept for debugging / display
+        "ll_pred": ll_pred_score,            # uncertainty score
+    }
+
+
+def collect_per_sample(model, processor, model_key, lm_layers, device, text_mfa,
+                        task, samples, letters, cids, out_jsonl, log_path):
+    """Run baseline + TCCD forwards, capture per-sample logits + uncertainty.
+
+    Resume-safe: reads any existing JSONL and skips already-captured `idx`s.
+    """
+    seen = set()
+    if out_jsonl.exists():
+        with open(out_jsonl) as f:
+            for line in f:
+                try:
+                    seen.add(json.loads(line).get("idx"))
+                except Exception:
+                    pass
+    to_run = [s for s in samples if s.get("idx") not in seen]
+    tee_print(f"  [{task}] total={len(samples)} cached={len(seen)} "
+              f"running={len(to_run)}", log_path)
+    if not to_run:
+        return 0
+
+    t0 = time.time()
+    n_ok = 0
+    with open(out_jsonl, "a") as jf:
+        for sample in to_run:
+            prompt = sample.get("prompt", "")
+            images = sample.get("images") or []
+            if not images:
+                continue
+            try:
+                inputs, _ = prepare_inputs(model_key, processor, prompt,
+                                            images, device)
+            except Exception:
+                continue
+            input_ids = inputs.get("input_ids")
+            gt = parse_mc_answer(str(sample.get("answer", "")))
+
+            # Baseline forward (no hook).
+            try:
+                with torch.no_grad():
+                    out_n = model(**inputs)
+                logits_n = out_n.logits[0, -1, :].float()
+                del out_n
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                torch.cuda.empty_cache()
+                continue
+            if not torch.isfinite(logits_n).all():
+                continue
+            letter_logits_bl = [
+                logits_n[cids[L]].item() if L in cids else float("-inf")
+                for L in letters
+            ]
+            pred_bl = letters[int(np.argmax(
+                [v if np.isfinite(v) else -1e9 for v in letter_logits_bl]))]
+
+            # TCCD forward (L12 hook).
+            hook = TextCDHook(text_mfa, model_key, processor,
+                              alpha_interp=ALPHA_INTERP, segment="all")
+            hook.set_input(input_ids)
+            handle = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    out_e = model(**inputs)
+                logits_e = out_e.logits[0, -1, :].float()
+                del out_e
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                handle.remove()
+                torch.cuda.empty_cache()
+                continue
+            handle.remove()
+
+            letter_logits_erased = [
+                logits_e[cids[L]].item() if L in cids else float("-inf")
+                for L in letters
+            ]
+            # TCCD-combined logits (α_cd=1.0 formula).
+            letter_logits_cd = [
+                letter_logits_bl[i] + ALPHA_CD *
+                (letter_logits_bl[i] - letter_logits_erased[i])
+                if (np.isfinite(letter_logits_bl[i]) and
+                    np.isfinite(letter_logits_erased[i]))
+                else float("-inf")
+                for i in range(N_LETTERS)
+            ]
+            pred_cd = letters[int(np.argmax(
+                [v if np.isfinite(v) else -1e9 for v in letter_logits_cd]))]
+
+            # Uncertainty signals from baseline.
+            signals = compute_uncertainty_signals(letter_logits_bl)
+
+            rec = {
+                "task": task,
+                "idx": sample.get("idx"),
+                "letters": letters,
+                "gt": (gt or "").lower(),
+                "letter_logits_bl": letter_logits_bl,
+                "letter_logits_erased": letter_logits_erased,
+                "letter_logits_cd": letter_logits_cd,
+                "pred_bl": pred_bl,
+                "pred_cd": pred_cd,
+                "bl_correct": pred_bl.lower() == (gt or "").lower(),
+                "cd_correct": pred_cd.lower() == (gt or "").lower(),
+                **signals,
+            }
+            jf.write(json.dumps(rec) + "\n")
+            jf.flush()
+            n_ok += 1
+
+            del logits_n, logits_e, inputs
+            if n_ok % 50 == 0:
+                torch.cuda.empty_cache()
+
+    elapsed_min = (time.time() - t0) / 60
+    tee_print(f"    done: {n_ok} new samples in {elapsed_min:.1f}m",
+              log_path)
+    return n_ok
+
+
+# ── Analysis: Pareto sweep over thresholds × signals ──
+
+def load_per_sample(per_sample_dir, tasks=BLINK_TASKS):
+    """Return flat list of all per-sample records across tasks."""
+    records = []
+    per_task_counts = {}
+    for task in tasks:
+        jp = per_sample_dir / f"{task}.jsonl"
+        task_recs = []
+        if jp.exists():
+            with open(jp) as f:
+                for line in f:
+                    if line.strip():
+                        task_recs.append(json.loads(line))
+        per_task_counts[task] = len(task_recs)
+        records.extend(task_recs)
+    return records, per_task_counts
+
+
+def compute_pareto(records, signal, thresholds):
+    """For a given uncertainty signal + threshold list, compute selective
+    TCCD accuracy and effective cost per threshold."""
+    # Sort records descending by signal score (higher = more uncertain).
+    sorted_recs = sorted(records, key=lambda r: r.get(signal, 0.0),
+                         reverse=True)
+    n_total = len(sorted_recs)
+    if n_total == 0:
+        return []
+
+    # Baseline accuracy (t=0, no TCCD anywhere).
+    bl_correct = sum(1 for r in sorted_recs if r["bl_correct"])
+    bl_acc = bl_correct / n_total
+
+    # Full-TCCD accuracy (t=1, TCCD everywhere).
+    cd_correct_full = sum(1 for r in sorted_recs if r["cd_correct"])
+    cd_acc_full = cd_correct_full / n_total
+    full_delta = cd_acc_full - bl_acc
+
+    points = []
+    # Add t=0 (pure baseline, cost 1.0×) explicitly for completeness.
+    points.append({
+        "t": 0.0,
+        "n_apply": 0,
+        "accuracy": round(bl_acc, 4),
+        "delta_vs_bl": 0.0,
+        "delta_fraction_of_full": 0.0,
+        "cost_multiplier": 1.0,
+    })
+    for t in thresholds:
+        n_apply = int(round(n_total * t))
+        apply_set = set(i for i in range(n_apply))  # indices in sorted order
+        n_correct = 0
+        for i, r in enumerate(sorted_recs):
+            correct = r["cd_correct"] if i in apply_set else r["bl_correct"]
+            if correct:
+                n_correct += 1
+        acc = n_correct / n_total
+        delta = acc - bl_acc
+        frac_full = (delta / full_delta) if abs(full_delta) > 1e-9 else 0.0
+        points.append({
+            "t": t,
+            "n_apply": n_apply,
+            "accuracy": round(acc, 4),
+            "delta_vs_bl": round(delta, 4),
+            "delta_fraction_of_full": round(frac_full, 4),
+            "cost_multiplier": round(1.0 + t, 4),
+        })
+    return points
+
+
+def compute_spearman(records, signal):
+    """Spearman ρ between uncertainty signal and 'TCCD corrected a baseline
+    error' indicator. Positive ρ means uncertain samples are where TCCD helps.
+
+    Uses scipy if available; otherwise a minimal rank-based implementation.
+    """
+    xs = np.array([r.get(signal, 0.0) for r in records], dtype=np.float64)
+    ys = np.array(
+        [int((not r["bl_correct"]) and r["cd_correct"]) for r in records],
+        dtype=np.float64,
+    )
+    if xs.size < 3 or ys.sum() == 0:
+        return {"rho": 0.0, "p": 1.0, "n": int(xs.size),
+                "n_helps": int(ys.sum())}
+    try:
+        from scipy.stats import spearmanr
+        rho, p = spearmanr(xs, ys)
+        if not np.isfinite(rho):
+            rho, p = 0.0, 1.0
+        return {"rho": round(float(rho), 4), "p": round(float(p), 4),
+                "n": int(xs.size), "n_helps": int(ys.sum())}
+    except ImportError:
+        # Minimal fallback: rank-transform + Pearson.
+        def _rank(a):
+            order = np.argsort(a, kind="stable")
+            ranks = np.empty_like(order, dtype=np.float64)
+            ranks[order] = np.arange(len(a))
+            return ranks
+        rx = _rank(xs); ry = _rank(ys)
+        rx -= rx.mean(); ry -= ry.mean()
+        denom = np.sqrt((rx * rx).sum() * (ry * ry).sum())
+        rho = float((rx * ry).sum() / denom) if denom > 0 else 0.0
+        return {"rho": round(rho, 4), "p": None,
+                "n": int(xs.size), "n_helps": int(ys.sum())}
+
+
+def analyze(per_sample_dir, log_path, model_key=DEFAULT_MODEL_KEY):
+    tee_print(f"\n{'#'*78}\n# Analysis: Pareto sweep ({model_key})\n{'#'*78}",
+              log_path)
+    records, per_task_counts = load_per_sample(per_sample_dir, BLINK_TASKS)
+    tee_print(f"  Loaded {len(records)} per-sample records across "
+              f"{len(per_task_counts)} tasks: {per_task_counts}", log_path)
+    if not records:
+        tee_print("  FAIL: no per-sample records loaded.", log_path)
+        return None
+
+    # Baseline + full-TCCD aggregate numbers.
+    n_total = len(records)
+    bl_correct = sum(1 for r in records if r["bl_correct"])
+    cd_correct = sum(1 for r in records if r["cd_correct"])
+    bl_acc = bl_correct / n_total
+    cd_acc = cd_correct / n_total
+    full_delta = cd_acc - bl_acc
+    tee_print(f"\n  Aggregate: bl_acc={bl_acc:.4f}  cd_acc={cd_acc:.4f}  "
+              f"full_Δ={full_delta:+.4f}  n={n_total}", log_path)
+
+    # Per-task Δ for context.
+    per_task_delta = {}
+    for task in BLINK_TASKS:
+        task_recs = [r for r in records if r["task"] == task]
+        if not task_recs:
+            continue
+        tb = sum(1 for r in task_recs if r["bl_correct"]) / len(task_recs)
+        tc = sum(1 for r in task_recs if r["cd_correct"]) / len(task_recs)
+        per_task_delta[task] = {
+            "n": len(task_recs), "bl": round(tb, 4),
+            "cd": round(tc, 4), "delta": round(tc - tb, 4),
+        }
+
+    # Pareto per signal.
+    pareto = {}
+    for signal in SIGNALS:
+        pts = compute_pareto(records, signal, THRESHOLDS)
+        spr = compute_spearman(records, signal)
+        pareto[signal] = {"points": pts, "spearman": spr}
+        tee_print(f"\n  [{signal}]  Spearman ρ={spr['rho']}  "
+                  f"n_helps={spr['n_helps']}/{spr['n']}", log_path)
+        tee_print(f"    {'t':>6s}  {'n_apply':>8s}  {'acc':>7s}  "
+                  f"{'Δ_vs_bl':>9s}  {'Δ_frac_full':>12s}  {'cost':>6s}",
+                  log_path)
+        for p in pts:
+            tee_print(f"    {p['t']:>6.2f}  {p['n_apply']:>8d}  "
+                      f"{p['accuracy']:>7.4f}  {p['delta_vs_bl']:>+9.4f}  "
+                      f"{p['delta_fraction_of_full']:>12.4f}  "
+                      f"{p['cost_multiplier']:>5.2f}×", log_path)
+
+    summary = {
+        "timestamp": datetime.now().isoformat(),
+        "protocol": {
+            "model": model_key, "text_layer": TEXT_LAYER,
+            "alpha_interp": ALPHA_INTERP, "alpha_cd": ALPHA_CD,
+            "blink_tasks": BLINK_TASKS,
+            "thresholds": THRESHOLDS,
+            "signals": SIGNALS,
+        },
+        "aggregate": {
+            "n_total": n_total, "bl_acc": round(bl_acc, 4),
+            "cd_acc": round(cd_acc, 4), "full_delta": round(full_delta, 4),
+        },
+        "per_task": per_task_delta,
+        "per_signal": pareto,
+    }
+    return summary
+
+
+def write_readout(summary, out_path):
+    with open(out_path, "w") as f:
+        f.write(f"Adaptive / Selective TCCD — V4 Step 9  {summary['timestamp']}\n")
+        f.write("=" * 78 + "\n\n")
+        p = summary["protocol"]
+        f.write(f"Protocol: {p['model'].upper()} L{p['text_layer']}, "
+                f"α_cd={p['alpha_cd']}, α_interp={p['alpha_interp']}, "
+                f"BLINK {len(p['blink_tasks'])} tasks.\n\n")
+        agg = summary["aggregate"]
+        f.write(f"Aggregate baseline: {agg['bl_acc']:.4f} over n={agg['n_total']}\n")
+        f.write(f"Aggregate full-TCCD: {agg['cd_acc']:.4f} "
+                f"(Δ={agg['full_delta']:+.4f})\n\n")
+
+        f.write("━━ Per-task breakdown ━━\n\n")
+        f.write(f"{'Task':<25s}{'n':>5s}{'bl':>8s}{'cd':>8s}{'Δ':>10s}\n")
+        f.write("-" * 56 + "\n")
+        for task, d in summary["per_task"].items():
+            f.write(f"{task:<25s}{d['n']:>5d}{d['bl']:>8.4f}"
+                    f"{d['cd']:>8.4f}{d['delta']:>+10.4f}\n")
+
+        f.write("\n\n━━ Pareto frontier per uncertainty signal ━━\n")
+        for signal, block in summary["per_signal"].items():
+            spr = block["spearman"]
+            f.write(f"\n[{signal}]  Spearman ρ = {spr['rho']}  "
+                    f"(p={spr['p']}, n_helps={spr['n_helps']}/{spr['n']})\n")
+            f.write(f"  {'t':>6s}  {'n_apply':>8s}  {'acc':>8s}  "
+                    f"{'Δ':>9s}  {'Δ_frac_full':>12s}  {'cost':>6s}\n")
+            f.write("  " + "-" * 56 + "\n")
+            for pt in block["points"]:
+                f.write(f"  {pt['t']:>6.2f}  {pt['n_apply']:>8d}  "
+                        f"{pt['accuracy']:>8.4f}  {pt['delta_vs_bl']:>+9.4f}  "
+                        f"{pt['delta_fraction_of_full']:>12.4f}  "
+                        f"{pt['cost_multiplier']:>5.2f}×\n")
+
+        # Recommendation heuristic.
+        f.write("\n\n━━ RECOMMENDATION ━━\n\n")
+        best_signal = None; best_score = -1e9
+        for signal, block in summary["per_signal"].items():
+            # Score at t=0.25: Δ captured fraction / cost multiplier
+            for pt in block["points"]:
+                if abs(pt["t"] - 0.25) < 1e-6:
+                    s = pt["delta_fraction_of_full"] / pt["cost_multiplier"]
+                    if s > best_score:
+                        best_score = s; best_signal = signal; best_pt = pt
+                    break
+        if best_signal is not None:
+            f.write(f"  Best signal (at t=0.25): {best_signal}\n")
+            f.write(f"    captures {best_pt['delta_fraction_of_full']*100:.1f}% "
+                    f"of full-TCCD Δ at {best_pt['cost_multiplier']}× cost\n")
+            rho = summary["per_signal"][best_signal]["spearman"]["rho"]
+            if rho >= 0.3:
+                f.write(f"    ρ={rho} ≥ 0.3 → STRONG CASE: publishable "
+                        f"Pareto curve; uncertainty predicts TCCD-helps.\n")
+            elif rho >= 0.1:
+                f.write(f"    ρ={rho} → MODERATE CASE: qualitative "
+                        f"recommendation; selective > random.\n")
+            else:
+                f.write(f"    ρ={rho} < 0.1 → WEAK CASE: falls back to "
+                        f"stratified-by-task selection (see V3 §14 alerting null).\n")
+        else:
+            f.write("  (no t=0.25 point available — check data completeness)\n")
+
+
+# ── Main ──
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--sanity", action="store_true",
+                        help="~5-10 min attended: Forensic × 30 samples, "
+                             "full pipeline verification.")
+    parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--resume_from", type=str, default=None,
+                        help="Resume a prior run; skips tasks with complete JSONL.")
+    parser.add_argument("--analysis_only", type=str, default=None,
+                        help="Run only the analysis step on an existing "
+                             "per_sample/ directory; no GPU.")
+    parser.add_argument("--model_key", type=str, default=DEFAULT_MODEL_KEY,
+                        help=f"Registry model key (default: "
+                             f"{DEFAULT_MODEL_KEY}). Any key with a Phase 2 "
+                             f"centroid file will work; see "
+                             f"get_phase2_centroid_path().")
+    args = parser.parse_args()
+
+    model_key = args.model_key
+    phase2_centroid_npz = get_phase2_centroid_path(model_key)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # ── analysis-only path (no GPU, no data collection) ──
+    if args.analysis_only:
+        base_out = Path(args.analysis_only)
+        if not (base_out / "per_sample").exists():
+            print(f"ERROR: no per_sample/ under {base_out}", file=sys.stderr)
+            sys.exit(2)
+        log_path = base_out / "adaptive_tccd_log.txt"
+        tee_print(f"\n[ANALYSIS ONLY] dir={base_out} model={model_key}", log_path)
+        summary = analyze(base_out / "per_sample", log_path, model_key=model_key)
+        if summary is None:
+            sys.exit(3)
+        sp = base_out / "adaptive_tccd_pareto.json"
+        with open(sp, "w") as f:
+            json.dump(summary, f, indent=2, default=str)
+        tee_print(f"Saved → {sp}", log_path)
+        tp = base_out / "adaptive_tccd_readout.txt"
+        write_readout(summary, tp)
+        tee_print(f"Saved → {tp}", log_path)
+        sys.exit(0)
+
+    # ── Sanity vs main run ──
+    # Include model_key in default dir names so multi-model cross_model runs
+    # don't collide on the same output path.
+    mk_tag = f"_{model_key}" if model_key != DEFAULT_MODEL_KEY else ""
+    if args.sanity:
+        # Respect --output_dir even in sanity mode (the cross-model wrapper
+        # passes per-model subdirs via --output_dir and expects results
+        # there). Fall back to a timestamped sanity path when no override.
+        base_out = (Path(args.output_dir) if args.output_dir
+                    else REPO_ROOT / "results" / f"v4_adaptive_tccd{mk_tag}_sanity_{ts}")
+        tasks_to_run = [SANITY_TASK]
+        max_per_task = SANITY_N
+    else:
+        if args.resume_from:
+            base_out = Path(args.resume_from)
+            if not base_out.exists():
+                print(f"ERROR: --resume_from not found: {base_out}",
+                      file=sys.stderr)
+                sys.exit(2)
+        else:
+            base_out = (Path(args.output_dir) if args.output_dir
+                        else REPO_ROOT / "results" / f"v4_adaptive_tccd{mk_tag}_{ts}")
+        tasks_to_run = BLINK_TASKS
+        max_per_task = None
+    base_out.mkdir(parents=True, exist_ok=True)
+    (base_out / "per_sample").mkdir(parents=True, exist_ok=True)
+
+    log_path = base_out / "adaptive_tccd_log.txt"
+    manifest_path = base_out / "adaptive_tccd_manifest.json"
+    manifest = {
+        "timestamp": ts, "base_out": str(base_out),
+        "sanity": bool(args.sanity),
+        "protocol": {
+            "model": model_key, "text_layer": TEXT_LAYER,
+            "alpha_interp": ALPHA_INTERP, "alpha_cd": ALPHA_CD,
+            "tasks": tasks_to_run,
+            "max_per_task": max_per_task,
+            "thresholds": THRESHOLDS, "signals": SIGNALS,
+            "centroid_path": str(phase2_centroid_npz),
+        },
+    }
+    if manifest_path.exists():
+        try:
+            prior = json.load(open(manifest_path))
+            manifest["prior_runs"] = manifest.get("prior_runs", []) + [prior]
+        except Exception:
+            pass
+
+    tee_print(f"\n{'='*78}", log_path)
+    tee_print(f"v4_adaptive_tccd.py  —  {ts}", log_path)
+    tee_print(f"  Model:      {model_key}", log_path)
+    tee_print(f"  Base:       {base_out}", log_path)
+    tee_print(f"  Tasks:      {tasks_to_run}", log_path)
+    tee_print(f"  Max/task:   {max_per_task or 'all val'}", log_path)
+    tee_print(f"  Signals:    {SIGNALS}", log_path)
+    tee_print(f"  Thresholds: {THRESHOLDS}", log_path)
+    tee_print(f"{'='*78}", log_path)
+
+    # Centroid gate.
+    if not phase2_centroid_npz.exists():
+        tee_print(f"FAIL: centroid file missing: {phase2_centroid_npz}",
+                  log_path)
+        sys.exit(4)
+    text_c = np.load(phase2_centroid_npz)["text_centroids"].astype(np.float32)
+    text_mfa = KMeansCentroids(text_c)
+    tee_print(f"  Centroids:  shape={text_c.shape}  path={phase2_centroid_npz.name}",
+              log_path)
+
+    # Load model once.
+    tee_print(f"\nLoading {model_key}...", log_path)
+    cfg = get_config(model_key)
+    model, processor, _ = load_model(model_key)
+    device = next(model.parameters()).device
+    lm_layers = find_lm_layers(model, cfg)
+    tee_print(f"  OK: n_layers={len(lm_layers)}", log_path)
+
+    letters = ALL_LETTERS[:N_LETTERS]
+    cids = get_choice_token_ids(processor, letters)
+
+    # Per-sample collection per task.
+    tee_print(f"\n{'='*78}\nDATA COLLECTION\n{'='*78}", log_path)
+    blink = load_blink(tasks=tasks_to_run, split="val")
+    t_total = time.time()
+    for task in tasks_to_run:
+        samples = blink.get(task, [])
+        if max_per_task is not None:
+            samples = samples[:max_per_task]
+        out_jsonl = base_out / "per_sample" / f"{task}.jsonl"
+        collect_per_sample(
+            model, processor, model_key, lm_layers, device, text_mfa,
+            task, samples, letters, cids, out_jsonl, log_path,
+        )
+        manifest[f"task_{task}"] = {
+            "n_samples": len(samples),
+            "jsonl": str(out_jsonl.relative_to(base_out)),
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2, default=str)
+
+    tee_print(f"\n  Total collection: {(time.time()-t_total)/60:.1f}m",
+              log_path)
+
+    # Cleanup GPU.
+    del model, processor
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Analysis.
+    summary = analyze(base_out / "per_sample", log_path, model_key=model_key)
+    if summary is None:
+        tee_print("FAIL: analysis produced nothing.", log_path)
+        sys.exit(5)
+
+    sp = base_out / "adaptive_tccd_pareto.json"
+    with open(sp, "w") as f:
+        json.dump(summary, f, indent=2, default=str)
+    tee_print(f"\nSaved → {sp}", log_path)
+    tp = base_out / "adaptive_tccd_readout.txt"
+    write_readout(summary, tp)
+    tee_print(f"Saved → {tp}", log_path)
+
+    manifest["analysis"] = "done"
+    manifest["overall_elapsed_min"] = round((time.time() - t_total) / 60, 2)
+    manifest["finished_at"] = datetime.now().isoformat()
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2, default=str)
+
+    # Sanity verdict.
+    if args.sanity:
+        tee_print(f"\n{'='*78}\nSANITY VERDICT\n{'='*78}", log_path)
+        agg = summary["aggregate"]
+        ok = (agg["n_total"] >= int(SANITY_N * 0.8)
+              and 0.2 <= agg["bl_acc"] <= 0.95)
+        tee_print(f"  n={agg['n_total']}  bl={agg['bl_acc']:.4f}  "
+                  f"cd={agg['cd_acc']:.4f}  Δ={agg['full_delta']:+.4f}",
+                  log_path)
+        for signal in SIGNALS:
+            spr = summary["per_signal"][signal]["spearman"]
+            tee_print(f"  {signal}: ρ={spr['rho']} "
+                      f"(n_helps={spr['n_helps']}/{spr['n']})", log_path)
+        tee_print(f"  Verdict: {'PASS' if ok else 'SUSPICIOUS'}", log_path)
+
+    tee_print(f"\n{'='*78}\nDONE\n{'='*78}", log_path)
+    tee_print(f"  Base:     {base_out}", log_path)
+    tee_print(f"  Pareto:   {sp}", log_path)
+    tee_print(f"  Readout:  {tp}", log_path)
+
+
+if __name__ == "__main__":
+    main()

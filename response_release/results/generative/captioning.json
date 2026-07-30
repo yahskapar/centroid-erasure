@@ -1,0 +1,25 @@
+{
+  "omission_reason": "per-image records contain generated captions and dataset-linked content",
+  "partial": false,
+  "per_image_records_released": false,
+  "protocol_label": "text-centroid replacement during generation; not contrastive decoding",
+  "summary": {
+    "baseline": {
+      "avg_objects_mentioned": 1.5555,
+      "chair_i_mean": 0.09603333333333333,
+      "chair_s": 0.179,
+      "n": 2000,
+      "recall_mean": 0.56568363997114
+    },
+    "delta_chair_i": -0.0012333333333333224,
+    "delta_chair_s": -0.0030000000000000027,
+    "delta_recall": -0.029182323232323282,
+    "tccd": {
+      "avg_objects_mentioned": 1.442,
+      "chair_i_mean": 0.09480000000000001,
+      "chair_s": 0.176,
+      "n": 2000,
+      "recall_mean": 0.5365013167388167
+    }
+  }
+}

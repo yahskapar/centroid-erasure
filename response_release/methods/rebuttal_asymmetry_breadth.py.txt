@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse, json, re, sys, time, warnings
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+
+warnings.filterwarnings("ignore")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+TEXT_LAYER = 12
+VIS_LAYER = 16
+ALPHA_INTERP_CD = 0.4
+ALPHA_CD = 1.0
+LETTERS_ALL = [chr(ord("A") + i) for i in range(10)]
+OPT_RE = re.compile(r"(?m)^\s*([A-H])[\.\):]\s+\S")
+
+CENTROIDS = {
+    "qwen":       "results/cross_model_v2_20260530_000833/qwen_centroids.npz",
+    "qwen3":      "results/cross_model_v2_20260530_000833/qwen3_centroids.npz",
+    "qwen3_4b":   "results/cross_model_v2_20260407_144343/qwen3_4b_centroids.npz",
+    "qwen_3b":    "results/cross_model_v2_20260407_144343/qwen_3b_centroids.npz",
+    "idefics3":   "results/cross_model_v2_20260407_144343/idefics3_centroids.npz",
+    "internvl":   "results/cross_model_v2_20260407_144343/internvl_centroids.npz",
+    "llava_ov":   "results/cross_model_v2_20260407_144343/llava_ov_centroids.npz",
+    "gemma3":     "results/cross_model_v2_20260529_031122/gemma3_centroids.npz",
+    "gemma3_12b": "results/cross_model_v2_20260529_031122/gemma3_12b_centroids.npz",
+    "gemma3_27b": "results/cross_model_v2_20260529_031122/gemma3_27b_centroids.npz",
+}
+BINARY_BENCH = {"mme"}
+
+
+# ── loaders: each returns list[{prompt, images, answer, letters}] ──
+
+def _mc_prompt(question, letters, choices, hint=""):
+    opt = "\n".join(f"{L}. {c}" for L, c in zip(letters, choices))
+    h = (str(hint).strip() + "\n") if hint and str(hint).strip() else ""
+    return f"{h}{question}\n{opt}\nAnswer with the option's letter."
+
+
+def load_realworldqa(cap, log):
+    from datasets import load_dataset
+    ds = load_dataset("lmms-lab/RealWorldQA", split="test")
+    out = []
+    for row in ds:
+        q = str(row.get("question", "")); letters = sorted(set(OPT_RE.findall(q)))
+        ans = str(row.get("answer", "")).strip().upper()
+        if len(letters) < 2 or ans not in letters or row.get("image") is None:
+            continue
+        out.append({"prompt": q, "images": [row["image"].convert("RGB")], "answer": ans, "letters": letters})
+        if cap and len(out) >= cap:
+            break
+    log(f"  realworldqa: {len(out)}"); return out
+
+
+def load_aokvqa(cap, log):
+    from datasets import load_dataset
+    ds = load_dataset("HuggingFaceM4/A-OKVQA", split="validation")
+    out = []
+    for row in ds:
+        choices = row.get("choices"); idx = row.get("correct_choice_idx")
+        if not choices or len(choices) < 2 or idx is None or not (0 <= idx < len(choices)) or row.get("image") is None:
+            continue
+        letters = LETTERS_ALL[:len(choices)]
+        out.append({"prompt": _mc_prompt(row["question"], letters, choices),
+                    "images": [row["image"].convert("RGB")], "answer": LETTERS_ALL[idx], "letters": letters})
+        if cap and len(out) >= cap:
+            break
+    log(f"  aokvqa: {len(out)}"); return out
+
+
+def load_seedbench(cap, log):
+    from datasets import load_dataset
+    ds = load_dataset("lmms-lab/SEED-Bench", split="test", streaming=True)
+    out = []
+    for row in ds:
+        if row.get("data_type") != "image":
+            continue
+        img = row.get("image"); img = (img[0] if isinstance(img, list) and img else img)
+        choices = [row.get("choice_a"), row.get("choice_b"), row.get("choice_c"), row.get("choice_d")]
+        ans = str(row.get("answer", "")).strip().upper()
+        if img is None or any(c is None for c in choices) or ans not in ["A", "B", "C", "D"]:
+            continue
+        letters = ["A", "B", "C", "D"]
+        out.append({"prompt": _mc_prompt(row["question"], letters, choices),
+                    "images": [img.convert("RGB")], "answer": ans, "letters": letters})
+        if cap and len(out) >= cap:
+            break
+    log(f"  seedbench: {len(out)}"); return out
+
+
+def load_scienceqa_img(cap, log):
+    from datasets import load_dataset
+    ds = load_dataset("derek-thomas/ScienceQA", split="test")
+    out = []
+    for row in ds:
+        img = row.get("image"); choices = row.get("choices"); idx = row.get("answer")
+        if img is None or not choices or len(choices) < 2 or idx is None or not (0 <= idx < len(choices)):
+            continue
+        letters = LETTERS_ALL[:len(choices)]
+        out.append({"prompt": _mc_prompt(row["question"], letters, choices, hint=row.get("hint", "")),
+                    "images": [img.convert("RGB")], "answer": LETTERS_ALL[idx], "letters": letters})
+        if cap and len(out) >= cap:
+            break
+    log(f"  scienceqa_img: {len(out)}"); return out
+
+
+def load_mme(cap, log):
+    from datasets import load_dataset
+    ds = load_dataset("lmms-lab/MME", split="test")
+    out = []
+    for row in ds:
+        img = row.get("image"); ans = str(row.get("answer", "")).strip().lower()
+        if img is None or ans not in ("yes", "no"):
+            continue
+        out.append({"prompt": str(row.get("question", "")), "images": [img.convert("RGB")],
+                    "answer": ans, "letters": ["yes", "no"]})
+        if cap and len(out) >= cap:
+            break
+    log(f"  mme: {len(out)}"); return out
+
+
+def _wrap_repo_loader(fn_name, mod="protocol_snapshot.benchmark_sweep"):
+    def loader(cap, log):
+        import importlib
+        from centroid_erasure.data.utils import parse_mc_answer
+        raw = getattr(importlib.import_module(mod), fn_name)()
+        samples = ([s for v in raw.values() for s in v] if isinstance(raw, dict) else list(raw))
+        out = []
+        for s in samples:
+            prompt = s.get("prompt", s.get("question", ""))
+            images = s.get("images") or ([s["image"]] if s.get("image") else [])
+            ans = parse_mc_answer(str(s.get("answer", "")))
+            if not images or ans is None:
+                continue
+            nc = s.get("_n_choices")
+            letters = LETTERS_ALL[:nc] if isinstance(nc, int) and nc >= 2 else (sorted(set(OPT_RE.findall(prompt))) or ["A", "B", "C", "D"])
+            out.append({"prompt": prompt, "images": images, "answer": ans, "letters": letters})
+            if cap and len(out) >= cap:
+                break
+        log(f"  {fn_name}: {len(out)}"); return out
+    return loader
+
+
+LOADERS = {
+    "realworldqa": load_realworldqa, "aokvqa": load_aokvqa, "seedbench": load_seedbench,
+    "scienceqa_img": load_scienceqa_img, "mme": load_mme,
+    "mmstar": _wrap_repo_loader("load_mmstar"), "cvbench": _wrap_repo_loader("load_cvbench"),
+    "mmvp": _wrap_repo_loader("load_mmvp_benchmark"),
+}
+ALL_ORDER = ["realworldqa", "aokvqa", "seedbench", "scienceqa_img", "mmstar", "cvbench", "mmvp", "mme"]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--benchmark", default="all")
+    ap.add_argument("--model", default="qwen")
+    ap.add_argument("--cap", type=int, default=None)
+    ap.add_argument("--sanity", action="store_true")
+    args = ap.parse_args()
+    names = ALL_ORDER if args.benchmark == "all" else [args.benchmark]
+
+    import torch
+    from scipy.stats import binomtest
+    from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs
+    from centroid_erasure.visual_tokens import find_visual_token_range
+    from centroid_erasure.eval_binary import get_binary_token_ids
+    from pipeline.paper_sweep import KMeansCentroids, TextCDHook
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_asymmetry_breadth_{args.model}_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lf = open(out_dir / "log.txt", "a", buffering=1)
+    def log(m):
+        print(m); lf.write(m + "\n")
+
+    cpath = REPO_ROOT / CENTROIDS.get(args.model, "MISSING")
+    if not cpath.exists():
+        log(f"FATAL: no centroids for {args.model} at {cpath}"); sys.exit(2)
+    log(f"=== asymmetry_breadth ({ts}) === model={args.model} benchmarks={names} cap={args.cap}")
+    cfg = get_config(args.model)
+    model, processor, _ = load_model(args.model)
+    lm_layers = find_lm_layers(model, cfg)
+    n_layers = len(lm_layers)
+    text_layer = TEXT_LAYER if n_layers > TEXT_LAYER else max(1, int(n_layers * 0.4))
+    vis_layer = VIS_LAYER if n_layers > VIS_LAYER else n_layers // 2
+    z = np.load(cpath)
+    text_mfa = KMeansCentroids(z["text_centroids"]); vis_mfa = KMeansCentroids(z["vis_centroids"])
+    device = next(model.parameters()).device
+    bids = get_binary_token_ids(processor)
+    log(f"  {args.model}: {n_layers} layers, text_L={text_layer} vis_L={vis_layer}, centroid dim={text_mfa.mu.shape[1]}")
+
+    def lids_for(letters):
+        d = {}
+        for L in letters:
+            enc = processor.tokenizer.encode(f" {L}", add_special_tokens=False)
+            if len(enc) == 1:
+                d[L] = enc[0]
+        return d
+
+    def pred_mc(logits, lids):
+        return max(lids, key=lambda L: logits[lids[L]].item()) if lids else "?"
+
+    def pred_bin(logits):
+        y = max((logits[t].item() for t in bids["yes"]), default=-1e9)
+        nn = max((logits[t].item() for t in bids["no"]), default=-1e9)
+        return "yes" if y > nn else "no"
+
+    def vis_hook_factory(input_ids):
+        def hook(module, inp, output):
+            h = output[0] if isinstance(output, tuple) else output
+            h = h.clone(); dtype, dev = h.dtype, h.device; sl = h.shape[1]
+            try:
+                vs, ve = find_visual_token_range(args.model, input_ids, h, processor)
+            except Exception:
+                vs, ve = 10, max(int(sl * 0.7), sl - 100)
+            if ve > vs and ve - vs >= 2:
+                vis_mfa.to_device(dev); tok = h[0, vs:ve, :].float()
+                if tok.shape[1] == vis_mfa.mu.shape[1]:
+                    h[0, vs:ve, :] = vis_mfa.replace(tok, 0.0).to(dtype)
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+        return hook
+
+    cap = 40 if args.sanity else args.cap
+    grid = {"model": args.model, "text_layer": text_layer, "vis_layer": vis_layer, "benchmarks": {}}
+    for bname in names:
+        if bname not in LOADERS:
+            log(f"  skip unknown {bname}"); continue
+        is_bin = bname in BINARY_BENCH
+        log(f"\n── {bname} ({'binary' if is_bin else 'mcqa'}) ──")
+        try:
+            samples = LOADERS[bname](cap, log)
+        except Exception as e:
+            log(f"  loader failed: {type(e).__name__}: {str(e)[:160]}"); continue
+        bl_c = txt_c = vis_c = cd_c = n = b = c = 0
+        yr = {"bl": 0, "txt": 0, "vis": 0}  # yes-prediction counts (binary de-risk, additive)
+        cls = {"bl": [0, 0, 0, 0], "txt": [0, 0, 0, 0], "vis": [0, 0, 0, 0]}  # [yes_ok, yes_tot, no_ok, no_tot]
+        t0 = time.time()
+        for s in samples:
+            gt = s["answer"]
+            if is_bin:
+                pf = pred_bin
+            else:
+                lids = lids_for(s["letters"])
+                if gt not in lids:
+                    continue
+                pf = lambda lg, _l=lids: pred_mc(lg, _l)
+            try:
+                inputs, _ = prepare_inputs(args.model, processor, s["prompt"], s["images"], device)
+            except Exception:
+                continue
+            input_ids = inputs["input_ids"]
+            try:
+                with torch.no_grad():
+                    logits_n = model(**inputs).logits[0, -1, :].float()
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                torch.cuda.empty_cache(); continue
+            pb = pf(logits_n)
+            th = TextCDHook(text_mfa, args.model, processor, alpha_interp=0.0, segment="all")
+            th.set_input(input_ids); h1 = lm_layers[text_layer].register_forward_hook(th)
+            try:
+                with torch.no_grad():
+                    pt = pf(model(**inputs).logits[0, -1, :].float())
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pt = pb
+            finally:
+                h1.remove()
+            h2 = lm_layers[vis_layer].register_forward_hook(vis_hook_factory(input_ids))
+            try:
+                with torch.no_grad():
+                    pv = pf(model(**inputs).logits[0, -1, :].float())
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pv = pb
+            finally:
+                h2.remove()
+            tc = TextCDHook(text_mfa, args.model, processor, alpha_interp=ALPHA_INTERP_CD, segment="all")
+            tc.set_input(input_ids); h3 = lm_layers[text_layer].register_forward_hook(tc)
+            try:
+                with torch.no_grad():
+                    logits_e = model(**inputs).logits[0, -1, :].float()
+                pcd = pf(logits_n + ALPHA_CD * (logits_n - logits_e))
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pcd = pb
+            finally:
+                h3.remove()
+            n += 1
+            if is_bin:
+                for tag, pp in (("bl", pb), ("txt", pt), ("vis", pv)):
+                    if pp == "yes": yr[tag] += 1
+                    gi = 0 if gt == "yes" else 2
+                    cls[tag][gi + 1] += 1
+                    if pp == gt: cls[tag][gi] += 1
+            ok_b, ok_cd = int(pb == gt), int(pcd == gt)
+            bl_c += ok_b; txt_c += int(pt == gt); vis_c += int(pv == gt); cd_c += ok_cd
+            if ok_b and not ok_cd: b += 1
+            elif not ok_b and ok_cd: c += 1
+            if n % 50 == 0:
+                torch.cuda.empty_cache()
+        if n == 0:
+            log("  no scorable samples"); continue
+        bl, txt, vis, cd = bl_c/n, txt_c/n, vis_c/n, cd_c/n
+        tcost, vcost = bl - txt, bl - vis
+        asym = (tcost / vcost) if abs(vcost) > 1e-4 else float("inf")
+        p_cd = binomtest(min(b, c), b + c, 0.5).pvalue if (b + c) > 0 else 1.0
+        norm_gain = (cd - bl) / (1.0 - bl) if bl < 0.999 else 0.0  # gain vs remaining error
+        grid["benchmarks"][bname] = {"n": n, "baseline": bl, "text_cost": tcost, "vis_cost": vcost,
+                                     "asymmetry": asym, "cd_acc": cd, "cd_delta": cd - bl,
+                                     "cd_norm_gain": norm_gain, "cd_mcnemar_p": p_cd, "format": "binary" if is_bin else "mcqa"}
+        if is_bin:
+            for tag in ("bl", "txt", "vis"):
+                ya = cls[tag][0] / cls[tag][1] if cls[tag][1] else 0.0
+                na = cls[tag][2] / cls[tag][3] if cls[tag][3] else 0.0
+                grid["benchmarks"][bname][f"{tag}_yes_rate"] = yr[tag] / n
+                grid["benchmarks"][bname][f"{tag}_yes_acc"] = ya
+                grid["benchmarks"][bname][f"{tag}_no_acc"] = na
+                grid["benchmarks"][bname][f"{tag}_bal_acc"] = (ya + na) / 2
+            log(f"  MME de-risk: bl_yes_rate={yr['bl']/n:.3f} bl_yes_acc={cls['bl'][0]/max(1,cls['bl'][1]):.3f} "
+                f"bl_no_acc={cls['bl'][2]/max(1,cls['bl'][3]):.3f} | vis_yes_rate={yr['vis']/n:.3f}")
+        log(f"  n={n} bl={bl:.3f} text_cost={tcost:+.4f} vis_cost={vcost:+.4f} asym={asym:.2f}x "
+            f"cd_acc={cd:.3f} CDΔ={cd-bl:+.4f} norm={norm_gain:+.3f} p={p_cd:.4f} ({(time.time()-t0)/60:.1f}m)")
+        with open(out_dir / "summary.json", "w") as f:
+            json.dump(grid, f, indent=2)
+
+    with open(out_dir / "readout.txt", "w") as f:
+        f.write(f"Asymmetry breadth — {args.model} (text_L{text_layer}/vis_L{vis_layer}), fixed alpha_interp=0.4 (NO per-task tuning) ({ts})\n\n")
+        f.write(f"{'benchmark':<14}{'fmt':>7}{'n':>5}{'baseline':>10}{'text_cost':>11}{'vis_cost':>10}{'asym':>8}{'cd_acc':>8}{'CDdelta':>9}{'norm_gain':>10}{'p':>9}\n")
+        for bn, r in grid["benchmarks"].items():
+            f.write(f"{bn:<14}{r.get('format','?'):>7}{r['n']:>5}{r['baseline']:>10.4f}{r['text_cost']:>+11.4f}"
+                    f"{r['vis_cost']:>+10.4f}{r['asymmetry']:>8.2f}{r['cd_acc']:>8.4f}{r['cd_delta']:>+9.4f}"
+                    f"{r['cd_norm_gain']:>+10.4f}{r['cd_mcnemar_p']:>9.4f}\n")
+        f.write("\nHeadline = text_cost >> vis_cost replicating across benchmarks (and, across runs, models).\n")
+        f.write("Alpha is FIXED at 0.4 across all benchmarks/models (no oracle per-task tuning).\n")
+        f.write("cd_acc + norm_gain (=delta/(1-baseline)) are reported, not only deltas.\n")
+        f.write("MME is binary yes/no (no A/B/C/D options), so its asymmetry is not an option-prior artifact.\n")
+    log("\nDone.")
+    lf.close()
+
+
+if __name__ == "__main__":
+    main()

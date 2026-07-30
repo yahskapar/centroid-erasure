@@ -16,6 +16,9 @@ class ModelConfig:
     # Immutable Hugging Face commit used by the released paper artifacts.
     # Registry entries outside the seven-model release may leave this unset.
     revision: Optional[str] = None
+    # Immutable commit for dynamically imported Hugging Face remote code.
+    # This may differ from the outer model repository revision.
+    code_revision: Optional[str] = None
     dtype_str: str = "bfloat16"
     quant_4bit: bool = False
     quant_8bit: bool = False
@@ -69,6 +72,7 @@ MODEL_REGISTRY = {
         model_id="OpenGVLab/InternVL2_5-8B-MPO-hf",
         lm_layer_path="model.language_model.layers",
         revision="543db189852edd2dbf0c0395c6afe4159cdc842f",
+        code_revision="f2ed63eda62aab342521f8d314ba8264fb5d41ff",
         analysis_layers=[0, 4, 8, 12, 16, 20, 24],
         intervention_layers=[0, 4, 8, 12],
     ),
@@ -219,6 +223,9 @@ def load_model(model_name: str, device_map: str = "auto"):
     config = get_config(model_name)
     model_id = config.model_id
     revision_kwargs = {"revision": config.revision} if config.revision else {}
+    code_revision_kwargs = (
+        {"code_revision": config.code_revision} if config.code_revision else {}
+    )
     revision_note = f" @ {config.revision[:12]}" if config.revision else " @ main (unpinned)"
     print(f"  Loading {model_name}: {model_id}{revision_note}")
 
@@ -252,7 +259,10 @@ def load_model(model_name: str, device_map: str = "auto"):
         from transformers import AutoProcessor, AutoModelForImageTextToText
 
         processor = AutoProcessor.from_pretrained(
-            model_id, trust_remote_code=True, **revision_kwargs
+            model_id,
+            trust_remote_code=True,
+            **revision_kwargs,
+            **code_revision_kwargs,
         )
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
@@ -262,6 +272,7 @@ def load_model(model_name: str, device_map: str = "auto"):
             low_cpu_mem_usage=True,
             trust_remote_code=True,
             **revision_kwargs,
+            **code_revision_kwargs,
         )
     elif model_name == "idefics3":
         from transformers import AutoProcessor, AutoModelForImageTextToText
@@ -279,7 +290,10 @@ def load_model(model_name: str, device_map: str = "auto"):
         # trust_remote_code=True is a no-op for native HF classes and the
         # required path for InternVL 3.5's example usage; safe across all three.
         processor = AutoProcessor.from_pretrained(
-            model_id, trust_remote_code=True, **revision_kwargs
+            model_id,
+            trust_remote_code=True,
+            **revision_kwargs,
+            **code_revision_kwargs,
         )
         model = AutoModelForImageTextToText.from_pretrained(
             model_id,
@@ -288,6 +302,7 @@ def load_model(model_name: str, device_map: str = "auto"):
             low_cpu_mem_usage=True,
             trust_remote_code=True,
             **revision_kwargs,
+            **code_revision_kwargs,
         )
 
     elif model_name == "llava_ov":
@@ -335,7 +350,7 @@ def load_model(model_name: str, device_map: str = "auto"):
         vram = torch.cuda.memory_allocated() / 1e9
         print(f"  ✓ Loaded. VRAM: {vram:.1f} GB")
     else:
-        print(f"  ✓ Loaded (CPU).")
+        print("  ✓ Loaded (CPU).")
 
     return model, processor, config
 

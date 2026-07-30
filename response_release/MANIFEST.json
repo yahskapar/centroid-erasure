@@ -1,0 +1,248 @@
+{
+  "claims": [
+    {
+      "claim_id": "supported_breadth_grid",
+      "method": "methods/rebuttal_asymmetry_breadth.py.txt",
+      "method_sha256": "423aaeed57b7230b37beee095764afae5be0f6740835eae8a030fd6d75df8935",
+      "n": {
+        "benchmarks": 8,
+        "models": 10,
+        "non_chance_cells": 70
+      },
+      "note": "Ten supported-span model files live under results/breadth; Qwen2-VL is excluded.",
+      "result": "results/breadth_index.json",
+      "result_sha256": "2406be40073fff12561caad34bbacf646c9e7dbca9071a32e2522fe6e1ddee86",
+      "status": "retained"
+    },
+    {
+      "claim_id": "blink_all14",
+      "method": "methods/all14_blink_sweep.py.txt",
+      "method_sha256": "51c0e2dc38700ccb86530ff16c1b8a1f424e2998950a7ac207a54d4a421fd094",
+      "n": {
+        "models": 2,
+        "tasks": 14
+      },
+      "note": "Full task-level aggregate tables are released for Qwen and Qwen3.",
+      "result": "results/all14_blink_index.json",
+      "result_sha256": "7640c7483ae79be3599280c87be3de2a18c48fea8d8a120be17ad12861f7c3de",
+      "status": "retained"
+    },
+    {
+      "claim_id": "benchmark_portfolio",
+      "method": "methods/benchmark_sweep.py.txt",
+      "method_sha256": "681b2e7b6ec8c28b3031ef3ca70627de56f1d50d9c47439efabc1ead6476ac45",
+      "n": {
+        "benchmark_groups": 3,
+        "models": 7
+      },
+      "note": "Aggregate core, VPBench, and MedBLINK sweeps; no examples redistributed.",
+      "result": "results/benchmark_portfolio.json",
+      "result_sha256": "0e2726a2716939f4501bbdc2ec533065b2cd7c074a631515e8ec14ac6f88bc84",
+      "status": "retained_descriptive"
+    },
+    {
+      "claim_id": "label_stability",
+      "method": "methods/rebuttal_label_asymmetry.py.txt",
+      "method_sha256": "dead9d5f27fe5326e9fdcd934a52c1e4970118a2961f306daef8a33b137cf03f",
+      "n": {
+        "conditions": 3,
+        "tasks": 6
+      },
+      "note": "ABCD, numeric-word, and symbol label conditions.",
+      "result": "results/label_stability.json",
+      "result_sha256": "5f71dd23ff59f4684c6e45fb57a1b6076394a9c7c39ddeb223cfdad5734e0f31",
+      "status": "retained"
+    },
+    {
+      "claim_id": "stage_and_layer_probe",
+      "method": "methods/rebuttal_e6_stage_sufficiency.py.txt",
+      "method_sha256": "a513d3202e33d3fc0d865bf27e7b5e3291aab4acc63a2b71b90b35477be973b9",
+      "n": {
+        "examples": 771,
+        "tasks": 6
+      },
+      "note": "Layer curve is separately stored in results/layer_probe.json.",
+      "result": "results/stage_probe.json",
+      "result_sha256": "4c8808669d5dd00c0b7debc40d003f07c75f111e2130054e1ff0e302926137f3",
+      "status": "retained"
+    },
+    {
+      "claim_id": "blank_image_control",
+      "method": "methods/rebuttal_text_only_blink.py.txt",
+      "method_sha256": "db0f68f86e5812f9e1636fb24f0f4cacded9312d08a9b14a76196917d6be0e70",
+      "n": {
+        "paired_examples": 771,
+        "tasks": 6
+      },
+      "note": "With-image versus blank-image aggregate interaction.",
+      "result": "results/blank_image.json",
+      "result_sha256": "e2df5ccf88c93e1df43bf507376faf792b785c1fdf2ffdde2cc996ac6c759c50",
+      "status": "retained"
+    },
+    {
+      "claim_id": "named_benchmarks",
+      "method": "methods/rebuttal_e5_named_benchmarks.py.txt",
+      "method_sha256": "b14c995b7c2bb8582163e1a6da4141d5602caed12035163fe59b2e7ac0a58c3e",
+      "n": {
+        "benchmarks": 3
+      },
+      "note": "Aggregate-only MMMU, MMBench, and MathVista records.",
+      "result": "results/named_benchmarks.json",
+      "result_sha256": "0c48af3c6bd5956955d3fc032f3d798609d89c33bb891f64f5f4e0c4842125bf",
+      "status": "retained"
+    },
+    {
+      "claim_id": "mmbench_circular_canonical",
+      "method": "scripts/recompute_claims.py",
+      "method_sha256": "015688846c3063c11b1ea313e9d2e960e9dcaa04f19bfc5005b8b52f50d6bfd2",
+      "n": 938,
+      "note": "Restricted to bases with four canonical rotations.",
+      "result": "results/mmbench_circular_canonical.json",
+      "result_sha256": "f67c8361ec158c184eddbc85a9c21e4442a4a74d47b81861a2f600b5602768bf",
+      "status": "retained_corrected"
+    },
+    {
+      "claim_id": "mmbench_portfolio_canonical",
+      "method": "scripts/recompute_claims.py",
+      "method_sha256": "015688846c3063c11b1ea313e9d2e960e9dcaa04f19bfc5005b8b52f50d6bfd2",
+      "n": 1176,
+      "note": "Canonical one-row-per-base aggregation.",
+      "result": "results/mmbench_portfolio_canonical.json",
+      "result_sha256": "dac55e2999f6d781196f19783dc38cc071ba9da260916dfc4b50a5e68b8a4735",
+      "status": "retained_corrected"
+    },
+    {
+      "claim_id": "selective_policy_and_calibration",
+      "method": "methods/v4_ece_analysis.py.txt",
+      "method_sha256": "d888bd664561b6b860864f10294744148ae69972109c25a0dfa0c12c27996c9a",
+      "n": {
+        "examples": 771,
+        "tasks": 6
+      },
+      "note": "Signal and coverage were selected in sample; held-out calibration is required.",
+      "result": "results/calibration.json",
+      "result_sha256": "1726a320f254a7bfaa1e5247fc9275edbc87adf122de4310a6ba9b661bc26c1a",
+      "status": "retained_exploratory"
+    },
+    {
+      "claim_id": "cd_baselines_cv",
+      "method": "methods/cd_baselines_summary.py",
+      "method_sha256": "6e238262e4e110f0a259e368dda4822ca296905d07b021cbd05176dc335d7e22",
+      "n": {
+        "examples": 771,
+        "methods": 3,
+        "tasks": 6
+      },
+      "note": "TCCD, LCD, and VCD alpha-grid plus leave-one-task-out summaries.",
+      "result": "results/cd_baselines_cv.json",
+      "result_sha256": "020b604628fbfb1e9cb66f19a23fa7861cdbbe3782b744ee7e1e475d48cb9b39",
+      "status": "retained_descriptive"
+    },
+    {
+      "claim_id": "cd_fixed_baselines",
+      "method": "methods/cd_fixed_baselines_protocol.md",
+      "method_sha256": "ae8d0f8b2a292c69d48c14d949f3dbd43a4d949d2bf921a94669ee245103ed89",
+      "n": {
+        "examples": 771,
+        "methods": 3,
+        "tasks": 6
+      },
+      "note": "Separate fixed-setting DoLa-low/high and SDCD task and paired-discordance counts.",
+      "result": "results/cd_fixed_baselines.json",
+      "result_sha256": "21c55191a04a03a084e9e1b38390df27c131534c068cecfb1a79403df581adb7",
+      "status": "retained_descriptive"
+    },
+    {
+      "claim_id": "vote_resampling",
+      "method": "methods/rebuttal_vote_kclean.py.txt",
+      "method_sha256": "3dc6a8a17b00787063a169e3d832658e22d45efb2411c616bc4b4ae003d44ac9",
+      "n": {
+        "examples": 771,
+        "tasks": 6
+      },
+      "note": "Additional aggregates in blink_portfolio.json, opera.json, and VIS-CCD.",
+      "result": "results/vote_resampling.json",
+      "result_sha256": "8b8d3f343f22fd177c318cce1746c1f617fceb5fae3c9886eda1f5db1b406f9e",
+      "status": "retained_descriptive"
+    },
+    {
+      "claim_id": "vis_ccd_control",
+      "method": "methods/v4_vis_ccd.py.txt",
+      "method_sha256": "27c4b277748ddf33b88321d357cf22d72398245501934f17c276588edc14dbff",
+      "n": {
+        "models": 3,
+        "tasks_per_model": 6
+      },
+      "note": "Visual-targeted contrastive-decoding control.",
+      "result": "results/vis_ccd.json",
+      "result_sha256": "e0f8afb2c08c28a0a3bdccf9172201ddfbe1a02463c6cd49628d2f965eb880e1",
+      "status": "retained_descriptive"
+    },
+    {
+      "claim_id": "mixed_effects_and_lomo",
+      "method": "methods/statistics_protocol.md",
+      "method_sha256": "452111343b8f3130d5d77eeaf2af4fb15ccdd4bd1d508781186c42be5c84942d",
+      "n": {
+        "model_task_cells": 42,
+        "models": 7
+      },
+      "note": "Canonical CORE-7 mixed-effects values plus corrected two-sided and directional LOMO tests.",
+      "result": "results/statistics.json",
+      "result_sha256": "3119c082cdbea60e3dee5d3d7dcb8abd09c75564d2bfd87f53ceeb46aff491ad",
+      "status": "retained_corrected"
+    },
+    {
+      "claim_id": "external_judges",
+      "method": "methods/external_judge_protocol.md",
+      "method_sha256": "67eeab5ecf3387d8032aab702d3b655d6d92e5604ca8217fdd53687dbe41e9be",
+      "n": 79,
+      "note": "Aggregate judge agreement only; prompts and item-linked outputs are omitted.",
+      "result": "results/external_judges.json",
+      "result_sha256": "f69d62af310a5b0fc9f2fae46fd29642c8ab55c263df4f8f0e96de09fc871f21",
+      "status": "retained_descriptive"
+    },
+    {
+      "claim_id": "generative_checks",
+      "method": "scripts/recompute_claims.py",
+      "method_sha256": "015688846c3063c11b1ea313e9d2e960e9dcaa04f19bfc5005b8b52f50d6bfd2",
+      "n": {
+        "captioning": 2000,
+        "docvqa": 300,
+        "okvqa": 2000
+      },
+      "note": "Other aggregates in captioning.json and docvqa.json.",
+      "result": "results/generative_index.json",
+      "result_sha256": "fc87c1f84c9481177e046d57b35946ef63ae5f89930d5c7e48332f0a206f2454",
+      "status": "retained_negative"
+    },
+    {
+      "claim_id": "segment_dose",
+      "method": "methods/segment_dose_protocol.md",
+      "method_sha256": "21aa8145c8a4d02a7a10906669fe2db7707a946b476c043cc9513ac9ff5cafb0",
+      "n": {
+        "tasks": 6
+      },
+      "note": "Legacy semantic-looking names are replaced by positional-span descriptions.",
+      "result": "results/segment_dose.json",
+      "result_sha256": "eec75217c6923c4dc51b4a2204f176a22d9dd0d1d2740f765ad8ad69440629d2",
+      "status": "retained_relabelled"
+    },
+    {
+      "claim_id": "centroid_refit_sensitivity",
+      "method": "scripts/recompute_variance.py",
+      "method_sha256": "1fae8facfdefd04f77496b2c2c3b68b1a9b7a0b6aa453790b4091e14c08e6fbd",
+      "n": {
+        "canonical_refits": 5,
+        "factorial_fits": 15,
+        "tasks": 6
+      },
+      "note": "Five K=256 faiss refits and a distinct K=512 scikit-learn 3x5 sensitivity grid; the two harnesses are verified separately and not pooled.",
+      "result": "results/variance_index.json",
+      "result_sha256": "4c220ef6b9d82358fb746a0747d9afaf4962c486e0d1324ea38350618f27231d",
+      "status": "retained_descriptive_two_harnesses"
+    }
+  ],
+  "format_version": 1,
+  "content_scope": "aggregate experimental records and sanitized protocol material",
+  "release_scope": "aggregate supplementary analyses reported in the paper"
+}

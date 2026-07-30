@@ -1,0 +1,21 @@
+{
+  "bl_em_rate": 0.5855,
+  "bl_soft_acc": 0.535999999999998,
+  "cd_em_rate": 0.5135,
+  "cd_soft_acc": 0.47049999999999836,
+  "config": {
+    "alpha_cd": 1.0,
+    "alpha_interp": 0.4,
+    "cap": 2000,
+    "max_new_tokens": 8,
+    "model": "qwen",
+    "sanity": false,
+    "text_layer": 12
+  },
+  "delta_em": -0.07200000000000006,
+  "delta_soft": -0.06549999999999967,
+  "mcnemar_b": 224,
+  "mcnemar_c": 80,
+  "mcnemar_p": 6.061344712370129e-17,
+  "n": 2000
+}

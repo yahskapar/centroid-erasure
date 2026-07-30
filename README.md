@@ -22,9 +22,10 @@ This repo ships the method and the reference artifacts, not an exhaustive dump o
   - **TCCD** — text centroid contrastive decoding. The reference distribution is the *erased* pass, so `logits_cd = logits_clean + alpha_cd * (logits_clean - logits_erased)`.
 
 * **Contrastive decoding baselines compared against in the paper**
-  - [Contrastive Decoding: Open-ended Text Generation as Optimization (LCD)](https://arxiv.org/abs/2210.15097), by Li *et al.*, 2022
+  - [Mitigating Hallucinations in Large Vision-Language Models via Language-Contrastive Decoding (LCD)](https://aclanthology.org/2024.findings-acl.359/), by Manevich and Tsarfaty, 2024
   - [Mitigating Object Hallucinations in Large Vision-Language Models through Visual Contrastive Decoding (VCD)](https://arxiv.org/abs/2311.16922), by Leng *et al.*, 2023
   - [DoLa: Decoding by Contrasting Layers Improves Factuality in Large Language Models](https://arxiv.org/abs/2309.03883), by Chuang *et al.*, 2023
+  - [SDCD: Structure-Disrupted Contrastive Decoding for Mitigating Hallucinations in Large Vision-Language Models](https://arxiv.org/abs/2601.03500), by Xia *et al.*, 2026
   - [OPERA: Alleviating Hallucination in Multi-Modal Large Language Models via Over-Trust Penalty and Retrospection-Allocation](https://arxiv.org/abs/2311.17911), by Huang *et al.*, 2024
 
 # :file_folder: Benchmarks
@@ -47,7 +48,7 @@ this release. Their numbers are reported in the paper; add a loader as described
 in [Adding a New Benchmark](#open_file_folder-adding-a-new-benchmark) to run them
 here. `main.py` itself is wired to BLINK only.
 
-Model weights are likewise **not** redistributed. The seven models with released banks load from their official HuggingFace repositories at immutable revisions recorded in `centroids/MANIFEST.json`; extension-only registry entries without released artifacts intentionally warn that they still track `main`. The seven released checkpoints and every dataset used by a shipped loader were pinned, public, and ungated when this release was audited. Network access is still required on first use, upstream terms remain the user's responsibility, and custom model entries should always set `revision`.
+Model weights are likewise **not** redistributed. The seven models with released banks load from their official HuggingFace repositories at immutable revisions recorded in `centroids/MANIFEST.json`; the secondary repository used by InternVL's dynamic tokenizer code is independently pinned there through `code_revision`. Extension-only registry entries without released artifacts intentionally warn that they still track `main`. The seven released checkpoints and every dataset used by a shipped loader were public and ungated at the recorded revisions. Network access is still required on first use, upstream terms remain the user's responsibility, and custom model entries should always set `revision` (and `code_revision` when remote code comes from another repository).
 
 # :wrench: Setup
 
@@ -57,7 +58,7 @@ STEP 1: `bash setup.sh conda` or `bash setup.sh uv`
 
 STEP 2: `conda activate centroid-erasure` or, when using `uv`, `source .venv/bin/activate`
 
-NOTE: the recorded loading, preprocessing, and evaluation environment is pinned exactly in `requirements.txt`, `environment.yml`, and `centroids/MANIFEST.json` (`torch==2.6.0+cu124`, `transformers==5.4.0`, Python 3.10.20, and the preprocessing/data packages). `setup.sh` selects the CUDA 12.4 torch wheel. The intervention hooks internal hidden states, so loosening these pins—especially `transformers` or `qwen-vl-utils`—is a common reason a run stops reproducing. The historical `faiss-gpu` package version used to fit the shipped banks was not logged; this does not affect reproduction with those precomputed banks, but it prevents a claim of byte-identical refitting.
+NOTE: the recorded loading, preprocessing, and evaluation environment is pinned exactly in `requirements.txt`, `environment.yml`, and `centroids/MANIFEST.json` (`torch==2.6.0+cu124`, `torchvision==0.21.0+cu124`, `transformers==5.4.0`, Python 3.10.20, and the preprocessing/data packages). `setup.sh` selects the matching CUDA 12.4 torch/torchvision wheels. The processor backend affects image tensors, and the intervention hooks internal hidden states, so loosening these pins—especially `transformers`, `torchvision`, or `qwen-vl-utils`—is a common reason a run stops reproducing. The historical `faiss-gpu` package version used to fit the shipped banks was not logged; this does not affect reproduction with those precomputed banks, but it prevents a claim of byte-identical refitting.
 
 # :computer: Example of Using Precomputed Centroids
 
@@ -73,13 +74,15 @@ Centroid banks for all seven models in the paper are in `centroids/`, so you can
 | `llava_ov` | LLaVA-OneVision-7B | SFT |
 | `idefics3` | Idefics3-8B-Llama3 | SFT |
 
-Each `.npz` holds a `text_centroids` and a `vis_centroids` array, both `(256, hidden_dim)` float32, fitted at L12 and L16 respectively on 2,000 MS-COCO images streamed from the `detection-datasets/coco` train split and shuffled with seed 1337.
+Each `.npz` holds a `text_centroids` and a `vis_centroids` array, both `(256, hidden_dim)` float32, fitted at L12 and L16 respectively on 2,000 MS-COCO images streamed from the `detection-datasets/coco` train split and shuffled with seed 1337. The recorded text fit uses the fixed generic prompt `Describe what you see in this image.\nAnswer:` and all 16 post-image tokens per image (32,000 text activations total). Those centroids are then applied to varied downstream post-image prompts; semantic prompt identity is not assumed.
+
+The original `.npz` files predate embedded metadata, so `centroids/MANIFEST.json` cryptographically binds every shipped bank to its registry key, checkpoint revision, and text/visual layers. The CLI verifies that binding before loading model weights. Custom banks must carry the provenance written by `main.py fit`; a same-width bank from another model, an altered shipped file, or an anonymous legacy bank is rejected instead of being guessed compatible.
 
 `demo/fixtures/<bank>_expected.json` is the raw sweep output for each model, so a local run can be compared against ours directly. Each file holds four blocks: `sufficiency` (the per-task text and visual centroid costs behind Table 1), `alpha_sweep` (the full `alpha_interp` sweep with McNemar counts and Wilson intervals, behind the appendix's per-model sweep figure), `segment_ablation` (per-segment CD deltas), and `_summary`.
 
 Note that these files contain **more than the paper prints**. In particular the paper reports the segment ablation for Qwen2.5-VL-7B only; the per-segment numbers for the other six models are released here but are not paper-endorsed findings, and the segment pattern does not hold uniformly across models. Treat `sufficiency` and `alpha_sweep` as the blocks that correspond to published results.
 
-One result worth stating up front, since it is derivable from these files in a few lines: a single `alpha_interp` selected on other models does **not** transfer. Leave-one-model-out selection over the seven sweeps gives a mean held-out delta of **-1.4%** (Wilcoxon p=0.92), and no global alpha is positive on average at any grid point. That is why the paper's deployment recipe fixes alpha per model rather than transferring one value, and it is consistent with the paper's central split: the measurement travels across models, the correction does not travel without per-model calibration. See the appendix section on the full alpha sweeps.
+One result worth stating up front, since it is derivable from these files in a few lines: a single `alpha_interp` selected on other models does **not** transfer. Leave-one-model-out selection over the seven sweeps gives a mean held-out delta of **-1.4%** (two-sided Wilcoxon p=0.22; one-sided test for positive recovery p=0.92), and no global alpha is positive on average at any grid point. That is why the paper's deployment recipe fixes alpha per model rather than transferring one value, and it is consistent with the paper's central split: the measurement travels across models, the correction does not travel without per-model calibration. See the appendix section on the full alpha sweeps.
 
 A second thing these files make visible, for the same reason: under **full** erasure (`alpha_interp=0`, the measurement condition) five of the seven models land on bit-identical per-task accuracies, `[0.250, 0.474, 0.470, 0.258, 0.516, 0.539]`. Those are exact item counts (33/132, 64/135, 55/117, 31/120, 64/124, 77/143), i.e. each model has collapsed to a constant answer letter, so the score is just the benchmark's gold-letter frequency and is therefore the same for every model that collapses. This is expected rather than alarming, and it is why the measurement and the intervention use different doses: full collapse removes the task interface along with the text content, which is exactly the confound the paper's Limitations name when they call a matched-damage control the key missing control. TCCD accordingly uses partial erasure (`alpha_interp=0.4`), where the model still answers. The visual-erasure column in the same files differs across models, which rules out a copy error. `centroids/MANIFEST.json` records a SHA-256 for every shipped artifact; all of them are byte-identical to the files behind the published results.
 
@@ -101,9 +104,7 @@ STEP 2: Read the VERDICTS block at the end.
 
 The demo runs Qwen2.5-VL-7B on three BLINK tasks (two where text competes, one where text is needed) and prints text cost, visual cost, and the TCCD delta for each. About 15-20 minutes and 20 GB of VRAM.
 
-Note 1: The demo defaults to 40 samples per task so it finishes quickly. Raise `--max-per-task` for a tighter estimate.
-
-Note 2: The demo reads the shipped bank and fits nothing, so the K-means backend is irrelevant here. It differs from the paper only because it runs a sample subset (40 per task by default). Raise `--max-per-task` and the numbers should converge on the published ones.
+Note 1: The demo reads the shipped bank and fits nothing, so the K-means backend is irrelevant. It covers three of the six BLINK tasks and defaults to 40 samples per task so it finishes quickly; raising `--max-per-task` tightens the estimates for those three tasks.
 
 # :zap: Measuring Modal Competition
 
@@ -155,9 +156,11 @@ STEP 3: Use it with `main.py measure` or `main.py tccd`.
 
 Note 1: `faiss-gpu` makes fitting much faster. Without a visible FAISS GPU the code falls back to `sklearn.MiniBatchKMeans`, which yields slightly different centers. CPU-only FAISS is not mislabeled as GPU. The backend actually used is printed and stored in the bank metadata. The original fit's FAISS package version was not captured, so a refit can be protocol-comparable but is not promised to be byte-identical to the shipped bank.
 
-Note 2: Centroids must be harvested in the same prompt context they will be applied in. Harvesting under a different prompt template produces an internally consistent but *different* set of centroids, which shifted per-task deltas by up to ~4.5 pp in our own testing. If your numbers look systematically off, check this first.
+Note 2: To protocol-match the shipped fit (byte-identical refitting is not claimed), use the fixed generic `HARVEST_PROMPT` and the same pinned chat-template, image-rendering, and processor pipeline. The published banks use 16 post-image tokens from each of 2,000 COCO prompts (32,000 total) and are subsequently applied to semantically different evaluation prompts. A separate sensitivity grid kept the generic prompt but used K=512 with `sklearn`, rather than the paper pipeline's K=256 with FAISS; per-task deltas differed by up to ~4.5 pp, so compare refit variation only within a matched fitting harness.
 
 Note 3: the fitting CLI uses only the pinned `detection-datasets/coco` train source by default. `--allow-coco-fallback` opts into alternate mirrors when that source is unavailable, but the resulting bank is not a reproduction of the paper fit. The chosen source, revision, package versions, layers, seeds, prompt, backend, and fallback count are embedded as `metadata_json` in new banks.
+
+Note 4: fitting requires the requested number of successful forward passes and text/visual activation contributions. Preparation, forward, or span failures cannot silently shrink the harvest and still produce a bank.
 
 # :robot: Adding a New Model
 
@@ -186,7 +189,7 @@ Note 3: the fitting CLI uses only the pinned `detection-datasets/coco` train sou
 
 Note 1: Layer indices are **not** derived automatically. The paper uses text L12 and visual L16 on 28-32 layer models. For a model of very different depth, pass `--text-layer` and `--visual-layer`, or sweep them.
 
-Note 2: If `find_visual_token_range` fails, the hook silently falls back to a positional heuristic, which will quietly degrade your numbers. Verify the span on a single sample before trusting a full run.
+Note 2: If `find_visual_token_range` cannot locate architecture-specific image markers, the hook fails closed. Add and empirically validate a real finder before trusting the model. `--allow-visual-span-fallback` exposes the historical positional heuristic only for explicitly unvalidated exploratory runs.
 
 # :open_file_folder: Adding a New Benchmark
 
@@ -214,29 +217,16 @@ The published protocol, for reference when comparing runs:
 
 These are also available programmatically as `centroid_erasure.PAPER_PROTOCOL`.
 
-# :test_tube: Tests
+## Verifying implementation fidelity
 
+```bash
+python3 scripts/verify_implementation_fidelity.py
 ```
-pytest                 # 300+ CPU tests, no GPU and no model download, ~10 seconds
-pytest -m gpu          # 7 smoke tests against a live model, needs ~20 GB VRAM
-```
 
-The CPU suite pins the things that can break silently rather than loudly:
-
-| Area | What is pinned |
-|---|---|
-| Sign convention | `alpha_interp=1` is exactly the identity; `alpha_interp=0` lands every row on a centroid; erasure is monotone in between |
-| CD direction | the reference is the **erased** pass, verified by asserting an erasure-suppressed token gets amplified and an erasure-promoted one gets damped |
-| Span arithmetic | `question` and `options` tile the post-image tail exactly at the 0.7 boundary, `system` is the prefix, text and visual spans stay disjoint |
-| Protocol honesty | `cv` never selects using the held-out task, and can never beat its own oracle |
-| **Fidelity** | `CentroidBank.replace` is **bitwise identical** to `KMeansCentroids.replace` in `pipeline/paper_sweep.py`, and `CentroidReplacementHook` is bitwise identical to `TextCDHook` across 40 combinations (4 segments x 5 alphas x 2 visual spans) including the span-failure fallback; every protocol constant matches |
-| Shipped artifacts | all seven banks are K=256, float32, finite, non-degenerate, and text ≠ visual |
-| Repo hygiene | credential/home-path patterns and private working-repo imports are rejected; every required file exists and is not `.gitignore`d |
-| Docs drift | every `--flag` and subcommand in the docs exists in `argparse`; `PROTOCOL.md` constants match `PAPER_PROTOCOL` |
-| Harvest match | `main.py fit` uses the same prompt, COCO source/split, shuffle seed, span resolution and float16 storage as the published script |
-| Artifacts | every shipped `.npz` and reference fixture matches its recorded SHA-256 |
-
-The repository-hygiene row exists because two `.gitignore` rules once silently excluded source files (`*_token*` matched `visual_tokens.py`, `data/` matched `centroid_erasure/data/`). The suite now fails if any tracked source file is shadowed by an ignore rule.
+This CPU-only command compares the maintained library with
+`pipeline/paper_sweep.py` element-wise across replacement strengths,
+positional text spans, visual spans, and the contrastive-logit formula. It
+does not download a model or dataset and does not require a test framework.
 
 ## Reproducing the core result
 
@@ -245,7 +235,9 @@ bash scripts/reproduce_core_result.sh          # full BLINK val split
 bash scripts/reproduce_core_result.sh --quick  # 40 samples/task
 ```
 
-Runs the unit tests, the GPU smoke tests, and the measurement, then compares against the published Qwen2.5-VL-7B run and prints a consolidated VERDICTS block.
+Runs the measurement with the shipped Qwen2.5-VL-7B bank, compares it against
+the published fixture, and prints a consolidated verdict. The script checks
+for CUDA and the pinned runtime before launching the model.
 
 A full-split run on an A6000 with the pinned versions reproduces the published numbers exactly: every task matches to four decimals, mean text cost 0.2723 against 0.2723, asymmetry 19.3x against 19.2x, largest per-task deviation 0.00005. The record is in [docs/REPRODUCTION.md](docs/REPRODUCTION.md).
 
@@ -257,17 +249,18 @@ The default run uses the shipped `centroids/qwen.npz`, which is byte-identical t
 |---|---|
 | `centroid_erasure/` | the library. Import this to use the method. |
 | `main.py` | CLI for fitting, measuring, and TCCD. |
-| `pipeline/paper_sweep.py` | the logic-preserved, unrefactored script that produced the published numbers, with release-safe imports/comments and immutable upstream pins. |
+| `pipeline/paper_sweep.py` | the protocol-preserving Phase-2 reference sweep behind the shipped banks and fixtures. |
 | `centroids/` | seven fitted centroid banks, one per model in the paper. |
 | `demo/` | the end-to-end demo and its expected-output fixture. |
 | `docs/` | protocol details and extension notes. |
+| [`response_release/`](response_release/) | aggregate camera-ready analysis records and scripts that recompute the reported summaries. |
 
 # :mag: What Is Not Here
 
 Stated plainly so nothing is a surprise:
 
 * **No model weights and no benchmark images.** Everything downloads from its original source under its own license.
-* **No raw result dumps**, with one exception: the seven per-model sweep outputs under `demo/fixtures/` ship as reference targets, and they carry some per-alpha and per-segment detail beyond what the paper prints (see above). Everything else stays out; this repo is the pipeline and the artifacts, not a results dump.
+* **No per-example benchmark or generation dumps.** The seven per-model sweep outputs under `demo/fixtures/` provide reference targets. [`response_release/`](response_release/) contains aggregate metrics and derived records for camera-ready analyses, together with standard-library scripts that recompute their reported summaries; it does not redistribute benchmark questions, answers, images, or generated responses.
 * **No paper-figure regeneration.** The figures are in the paper.
 * **No MedGemma centroid banks.** The Health AI Developer Foundations terms are the most restrictive license touching this work, and we did not want to guess at what they permit for derived artifacts. If you accept those terms you can fit your own with `main.py fit --model medgemma`; that entry loads in 4-bit, so it needs `bitsandbytes` (included in `requirements.txt`) and access to the gated checkpoint.
 

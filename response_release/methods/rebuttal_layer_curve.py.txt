@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse, gc, json, sys, time, warnings
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+import os
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs  # noqa
+from centroid_erasure.visual_tokens import find_visual_token_range  # noqa
+from centroid_erasure.eval_mcqa import get_choice_token_ids  # noqa
+from centroid_erasure.data.utils import parse_mc_answer  # noqa
+from protocol_snapshot.latent_factor_cd import ALL_LETTERS  # noqa
+from pipeline.paper_sweep import KMeansCentroids, fit_centroids  # noqa
+
+MODEL_KEY = "qwen"
+DEFAULT_LAYERS = [0, 4, 8, 12, 16, 20, 24]
+DATA_SEED = 1337
+MAX_IMAGES = 1000
+CAP_PER_LAYER = 120_000   # token-buffer cap per layer (>= K for fit)
+TASK_ORDER = ["Forensic_Detection", "Visual_Similarity", "Art_Style",
+              "Counting", "Relative_Depth", "Spatial_Relation"]
+
+
+def cache_per_layer(model, processor, lm_layers, device, layers, max_images, log):
+    """One COCO pass; collect visual tokens at every target layer (capped)."""
+    from datasets import load_dataset
+    text_cfg = getattr(model.config, "text_config", model.config)
+    hidden = text_cfg.hidden_size
+    buffers = {L: np.empty((CAP_PER_LAYER, hidden), dtype=np.float16) for L in layers}
+    cursors = {L: 0 for L in layers}
+    ds = load_dataset("detection-datasets/coco", split="train", streaming=True)
+    ds = ds.shuffle(seed=DATA_SEED, buffer_size=1000)
+    n_cached, t0 = 0, time.time()
+    for item in ds:
+        if n_cached >= max_images or all(cursors[L] >= CAP_PER_LAYER for L in layers):
+            break
+        img = item.get("image")
+        if img is None:
+            continue
+        try:
+            inputs, _ = prepare_inputs(MODEL_KEY, processor, "Describe what you see in this image.\nAnswer:",
+                                       [img.convert("RGB")], device)
+        except Exception:
+            continue
+        input_ids = inputs.get("input_ids")
+        captured = {}
+        def mk(L):
+            def fn(module, inp, out):
+                captured[L] = (out[0] if isinstance(out, tuple) else out).detach().cpu()
+            return fn
+        handles = [lm_layers[L].register_forward_hook(mk(L)) for L in layers if L < len(lm_layers)]
+        try:
+            with torch.no_grad():
+                model(**inputs)
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            for h in handles: h.remove()
+            torch.cuda.empty_cache(); continue
+        for h in handles:
+            h.remove()
+        ref = captured.get(layers[0])
+        if ref is not None:
+            try:
+                vs, ve = find_visual_token_range(MODEL_KEY, input_ids, ref.to(device), processor)
+            except Exception:
+                ve = max(int(input_ids.shape[1] * 0.7), input_ids.shape[1] - 100); vs = 10
+        else:
+            vs, ve = 10, max(int(input_ids.shape[1] * 0.7), input_ids.shape[1] - 100)
+        for L in layers:
+            if L not in captured or cursors[L] >= CAP_PER_LAYER:
+                continue
+            toks = captured[L][0, vs:ve, :].half().numpy()
+            k = min(len(toks), CAP_PER_LAYER - cursors[L])
+            if k > 0:
+                buffers[L][cursors[L]:cursors[L] + k] = toks[:k]
+                cursors[L] += k
+        n_cached += 1
+        if n_cached % 200 == 0:
+            log(f"    cached {n_cached}/{max_images} ({(time.time()-t0)/60:.1f}m) "
+                + " ".join(f"L{L}:{cursors[L]}" for L in layers))
+            torch.cuda.empty_cache()
+        del captured, inputs
+    log(f"  cached {n_cached} images")
+    mfas = {}
+    for L in layers:
+        if cursors[L] >= 256:
+            log(f"  fitting L{L} centroids ({cursors[L]} tokens)...")
+            mfas[L] = fit_centroids(buffers[L][:cursors[L]])
+        else:
+            log(f"  L{L}: only {cursors[L]} tokens, skipping")
+    del buffers; gc.collect()
+    return mfas
+
+
+def load_blink_samples(cap_per_task, log):
+    from centroid_erasure.data.blink import load_blink
+    log("  Loading BLINK 6 tasks (val)...")
+    blink = load_blink(tasks=list(TASK_ORDER), split="val")
+    samples = []
+    for task in TASK_ORDER:
+        ts = (blink.get(task, []) or [])[:cap_per_task] if cap_per_task else (blink.get(task, []) or [])
+        for s in ts:
+            s["_task"] = task; samples.append(s)
+    log(f"  BLINK: {len(samples)} samples")
+    return samples
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true")
+    ap.add_argument("--layers", default=",".join(map(str, DEFAULT_LAYERS)))
+    ap.add_argument("--cap_per_task", type=int, default=None)
+    args = ap.parse_args()
+    layers = [int(x) for x in args.layers.split(",") if x.strip() != ""]
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_layer_curve_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lf = open(out_dir / "log.txt", "a", buffering=1)
+    def log(m):
+        print(m); lf.write(m + "\n")
+
+    cfg = get_config(MODEL_KEY)
+    model, processor, _ = load_model(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    device = next(model.parameters()).device
+    layers = [L for L in layers if L < len(lm_layers)]
+    log(f"=== rebuttal_layer_curve ({ts}) === layers={layers} of {len(lm_layers)}")
+
+    max_images = 400 if args.sanity else MAX_IMAGES
+    cap_task = 8 if args.sanity else args.cap_per_task
+    mfas = cache_per_layer(model, processor, lm_layers, device, layers, max_images, log)
+    samples = load_blink_samples(cap_task, log)
+
+    # baseline + per-layer alpha=0 visual-replaced accuracy
+    n = 0
+    bl_c = 0
+    cost_c = {L: 0 for L in mfas}
+    t0 = time.time()
+    for si, sample in enumerate(samples):
+        prompt = sample.get("prompt", sample.get("question", ""))
+        images = sample.get("images") or ([sample["image"]] if sample.get("image") else [])
+        if not images:
+            continue
+        nc = sample.get("_n_choices", 4)
+        letters = ALL_LETTERS[:nc]
+        cids = get_choice_token_ids(processor, letters)
+        gt = parse_mc_answer(str(sample.get("answer", "")))
+        try:
+            inputs, _ = prepare_inputs(MODEL_KEY, processor, prompt, images, device)
+        except Exception:
+            continue
+        input_ids = inputs["input_ids"]
+        def get_pred(logits):
+            vals = {L: logits[cids[L]].item() for L in letters if L in cids}
+            return max(vals, key=vals.get) if vals else "?"
+        with torch.no_grad():
+            pb = get_pred(model(**inputs).logits[0, -1, :].float())
+        n += 1
+        bl_ok = int(pb == gt); bl_c += bl_ok
+        for L, mfa in mfas.items():
+            def vis_hook(module, inp, out):
+                h = out[0] if isinstance(out, tuple) else out
+                h = h.clone(); dtype, dev = h.dtype, h.device; sl = h.shape[1]
+                try:
+                    vs, ve = find_visual_token_range(MODEL_KEY, input_ids, h, processor)
+                except Exception:
+                    vs, ve = 10, max(int(sl * 0.7), sl - 100)
+                if ve > vs and ve - vs >= 2:
+                    mfa.to_device(dev); tok = h[0, vs:ve, :].float()
+                    if tok.shape[1] == mfa.mu.shape[1]:
+                        h[0, vs:ve, :] = mfa.replace(tok, 0.0).to(dtype)
+                return (h,) + out[1:] if isinstance(out, tuple) else h
+            hd = lm_layers[L].register_forward_hook(vis_hook)
+            try:
+                with torch.no_grad():
+                    pv = get_pred(model(**inputs).logits[0, -1, :].float())
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pv = pb
+            finally:
+                hd.remove()
+            cost_c[L] += int(pv == gt)
+        if n % 50 == 0:
+            log(f"  [{si+1}/{len(samples)}] bl={bl_c/n:.3f} ({(time.time()-t0)/60:.1f}m)")
+            torch.cuda.empty_cache()
+
+    bl = bl_c / max(1, n)
+    curve = {str(L): {"vis_replaced_acc": cost_c[L] / max(1, n),
+                      "vis_cost": bl - cost_c[L] / max(1, n)} for L in mfas}
+    summary = {"model": MODEL_KEY, "n": n, "baseline": bl, "layers": curve}
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    with open(out_dir / "readout.txt", "w") as f:
+        f.write(f"Visual-centroid coarsening curve across LLM layers ({ts})  n={n} baseline={bl:.4f}\n\n")
+        f.write(f"{'layer':>6}{'vis_replaced_acc':>18}{'vis_cost(alpha=0)':>20}\n")
+        for L in sorted(mfas):
+            r = curve[str(L)]
+            f.write(f"L{L:<5}{r['vis_replaced_acc']:>18.4f}{r['vis_cost']:>20.4f}\n")
+        f.write("\nExpect: vis_cost high in early LLM layers, decaying toward mid-LLM (coarsening).\n")
+        f.write("Anchors from stage-sufficiency: raw-ViT +0.22, post-projector +0.21, L16 +0.02.\n")
+    log("\nDone. " + json.dumps(curve))
+    lf.close()
+
+
+if __name__ == "__main__":
+    main()

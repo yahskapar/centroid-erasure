@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import re
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import (  # noqa: E402
+    get_config, load_model, find_lm_layers, prepare_inputs,
+)
+from pipeline.paper_sweep import (  # noqa: E402
+    KMeansCentroids, TextCDHook,
+)
+
+MODEL_KEY = "qwen"
+TEXT_LAYER = 12
+ALPHA_INTERP = 0.4
+ALPHA_CD = 1.0
+MAX_NEW_TOKENS = 8
+PHASE2_CENTROID = (
+    REPO_ROOT / "results" / "cross_model_v2_20260407_144343" / "qwen_centroids.npz"
+)
+
+# Canonical VQA normalization
+_ARTICLES = {"a", "an", "the"}
+_PUNCT_RE = re.compile(r"[^\w\s]")
+
+
+def normalize_vqa_answer(s):
+    s = str(s).lower().strip()
+    s = _PUNCT_RE.sub(" ", s)
+    tokens = [t for t in s.split() if t and t not in _ARTICLES]
+    return " ".join(tokens)
+
+
+def vqa_soft_acc(pred, annotator_answers):
+    """Standard VQA soft accuracy: min(1.0, matches / 3)."""
+    pred_n = normalize_vqa_answer(pred)
+    matches = sum(
+        1 for a in annotator_answers if normalize_vqa_answer(a) == pred_n
+    )
+    return min(1.0, matches / 3.0)
+
+
+def load_okvqa(cap=None, log=print):
+    """Load OK-VQA val from HuggingFace.
+
+    Schema (lmms-lab/OK-VQA):
+      - image: PIL.Image
+      - question: str
+      - answers: list[str]  (10 annotator answers)
+      - question_id: int / str
+    """
+    from datasets import load_dataset
+    log("  Loading lmms-lab/OK-VQA (val)...")
+    try:
+        ds = load_dataset("lmms-lab/OK-VQA", split="val2014")
+    except Exception:
+        try:
+            ds = load_dataset("HuggingFaceM4/OK-VQA", split="validation")
+        except Exception as e:
+            log(f"  ⚠ OK-VQA load failed: {e}")
+            return []
+    log(f"  OK-VQA: {len(ds)} val samples")
+    samples = []
+    for row in ds:
+        img = row.get("image")
+        if img is None:
+            continue
+        img = img.convert("RGB") if hasattr(img, "convert") else img
+        q = row.get("question")
+        if not q:
+            continue
+        # Some HF mirrors expose answers as list[dict], others as list[str]
+        raw = row.get("answers") or row.get("answer") or []
+        if raw and isinstance(raw[0], dict):
+            anns = [a.get("answer", a.get("raw_answer", "")) for a in raw]
+        else:
+            anns = [str(a) for a in raw]
+        anns = [a for a in anns if a]
+        if not anns:
+            continue
+        # Short instruction: encourages a short answer to match VQA protocol
+        prompt = (
+            f"{q}\n"
+            f"Answer the question using a single word or short phrase."
+        )
+        samples.append({
+            "prompt": prompt,
+            "images": [img],
+            "answers": anns,
+            "question_id": row.get("question_id", ""),
+            "question": q,
+        })
+        if cap and len(samples) >= cap:
+            break
+    return samples
+
+
+def generate_greedy_with_first_token_tccd(
+    model, processor, inputs, lm_layers, text_mfa, use_tccd, log,
+):
+    """Generate up to MAX_NEW_TOKENS greedy. If use_tccd, apply TCCD on the
+    FIRST token only, then continue greedy on subsequent tokens.
+
+    Returns (token_id_list, decoded_string).
+    """
+    device = next(model.parameters()).device
+    generated = []
+    input_ids = inputs["input_ids"]
+
+    # Step 1: baseline forward to get baseline logits for first token
+    with torch.no_grad():
+        out_n = model(**inputs)
+    logits_n = out_n.logits[0, -1, :].float()
+    past = getattr(out_n, "past_key_values", None)
+
+    # If TCCD: apply hook for the first forward only
+    if use_tccd:
+        hook = TextCDHook(text_mfa, MODEL_KEY, processor,
+                          alpha_interp=ALPHA_INTERP, segment="all")
+        hook.set_input(input_ids)
+        handle = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+        try:
+            with torch.no_grad():
+                out_e = model(**inputs)
+            logits_e = out_e.logits[0, -1, :].float()
+        finally:
+            handle.remove()
+        # Contrastive combine
+        logits = logits_n + ALPHA_CD * (logits_n - logits_e)
+    else:
+        logits = logits_n
+
+    next_tok = int(logits.argmax())
+    generated.append(next_tok)
+
+    # Step 2..N: continue greedy (NO TCCD)
+    cur_ids = torch.tensor([[next_tok]], device=device)
+    cur_mask = inputs.get("attention_mask")
+    if cur_mask is not None:
+        cur_mask = torch.cat(
+            [cur_mask, torch.ones((1, 1), device=device, dtype=cur_mask.dtype)],
+            dim=1,
+        )
+
+    for _ in range(MAX_NEW_TOKENS - 1):
+        if past is None:
+            # Fallback: re-feed full sequence (slower but works)
+            new_input = torch.cat([input_ids, torch.tensor([generated], device=device)], dim=1)
+            with torch.no_grad():
+                out = model(input_ids=new_input)
+            logits = out.logits[0, -1, :].float()
+        else:
+            try:
+                with torch.no_grad():
+                    out = model(
+                        input_ids=cur_ids,
+                        attention_mask=cur_mask,
+                        past_key_values=past,
+                        use_cache=True,
+                    )
+                logits = out.logits[0, -1, :].float()
+                past = out.past_key_values
+            except Exception:
+                # KV-cache shape mismatch on some Qwen versions — fall back
+                new_input = torch.cat([input_ids, torch.tensor([generated], device=device)], dim=1)
+                with torch.no_grad():
+                    out = model(input_ids=new_input)
+                logits = out.logits[0, -1, :].float()
+                past = None
+
+        next_tok = int(logits.argmax())
+        # Stop on EOS or newline
+        if next_tok == processor.tokenizer.eos_token_id:
+            break
+        generated.append(next_tok)
+        cur_ids = torch.tensor([[next_tok]], device=device)
+        if cur_mask is not None:
+            cur_mask = torch.cat(
+                [cur_mask, torch.ones((1, 1), device=device, dtype=cur_mask.dtype)],
+                dim=1,
+            )
+
+    decoded = processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
+    return generated, decoded
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true")
+    ap.add_argument("--cap", type=int, default=2000,
+                    help="Max samples to evaluate (default 2000 of ~5046)")
+    args = ap.parse_args()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_openended_vqa_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "openended_vqa_log.txt"
+    log_file = open(log_path, "a", buffering=1)
+
+    def log(m):
+        print(m)
+        log_file.write(m + "\n")
+
+    log(f"=== rebuttal_openended_vqa ({ts}) ===")
+    log(f"sanity={args.sanity}  cap={args.cap}")
+
+    if not PHASE2_CENTROID.exists():
+        log(f"FATAL: centroid file missing — {PHASE2_CENTROID}")
+        sys.exit(1)
+
+    cfg = get_config(MODEL_KEY)
+    model, processor, _ = load_model(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    log(f"Loaded {MODEL_KEY}, {len(lm_layers)} LM layers")
+    centroids_npz = np.load(PHASE2_CENTROID)
+    text_mfa = KMeansCentroids(centroids_npz["text_centroids"])
+    log(f"Loaded centroids K={text_mfa.mu.shape[0]} D={text_mfa.mu.shape[1]}")
+
+    cap = 8 if args.sanity else args.cap
+    samples = load_okvqa(cap=cap, log=log)
+    if not samples:
+        log("FATAL: no samples loaded.")
+        sys.exit(1)
+
+    device = next(model.parameters()).device
+
+    per_sample = []
+    bl_total = cd_total = 0.0
+    bl_em_count = cd_em_count = 0
+    t0 = time.time()
+
+    out_jsonl = out_dir / "per_sample.jsonl"
+
+    for s_idx, sample in enumerate(samples):
+        try:
+            inputs, _ = prepare_inputs(
+                MODEL_KEY, processor, sample["prompt"], sample["images"], device,
+            )
+        except Exception as e:
+            continue
+
+        try:
+            _, ans_bl = generate_greedy_with_first_token_tccd(
+                model, processor, inputs, lm_layers, text_mfa,
+                use_tccd=False, log=log,
+            )
+            _, ans_cd = generate_greedy_with_first_token_tccd(
+                model, processor, inputs, lm_layers, text_mfa,
+                use_tccd=True, log=log,
+            )
+        except Exception as e:
+            log(f"  ⚠ sample {s_idx}: generation failed: {e}")
+            continue
+
+        bl_acc = vqa_soft_acc(ans_bl, sample["answers"])
+        cd_acc = vqa_soft_acc(ans_cd, sample["answers"])
+        bl_em = int(normalize_vqa_answer(ans_bl) in [normalize_vqa_answer(a) for a in sample["answers"]])
+        cd_em = int(normalize_vqa_answer(ans_cd) in [normalize_vqa_answer(a) for a in sample["answers"]])
+        bl_total += bl_acc
+        cd_total += cd_acc
+        bl_em_count += bl_em
+        cd_em_count += cd_em
+        per_sample.append({
+            "qid": sample["question_id"],
+            "question": sample["question"],
+            "answers": sample["answers"][:3],
+            "ans_bl": ans_bl, "ans_cd": ans_cd,
+            "bl_acc": bl_acc, "cd_acc": cd_acc,
+            "bl_em": bl_em, "cd_em": cd_em,
+        })
+        if (s_idx + 1) % 50 == 0:
+            elapsed = (time.time() - t0) / 60
+            n = len(per_sample)
+            log(f"  [{n}/{cap}]  bl_soft={bl_total/n:.4f}  "
+                f"cd_soft={cd_total/n:.4f}  Δ={(cd_total-bl_total)/n:+.4f}  "
+                f"({elapsed:.1f} min)")
+            torch.cuda.empty_cache()
+
+    n = max(1, len(per_sample))
+    bl_soft = bl_total / n
+    cd_soft = cd_total / n
+    bl_em_rate = bl_em_count / n
+    cd_em_rate = cd_em_count / n
+
+    # Persist
+    with open(out_jsonl, "w") as f:
+        for r in per_sample:
+            f.write(json.dumps(r) + "\n")
+
+    # McNemar on exact-match
+    b = sum(1 for r in per_sample if r["bl_em"] and not r["cd_em"])
+    c = sum(1 for r in per_sample if not r["bl_em"] and r["cd_em"])
+    from scipy.stats import binomtest
+    mcnemar_p = binomtest(min(b, c), b + c, p=0.5).pvalue if (b + c) > 0 else 1.0
+
+    summary = {
+        "config": {
+            "model": MODEL_KEY, "text_layer": TEXT_LAYER,
+            "alpha_interp": ALPHA_INTERP, "alpha_cd": ALPHA_CD,
+            "max_new_tokens": MAX_NEW_TOKENS,
+            "cap": cap, "sanity": args.sanity,
+        },
+        "n": n,
+        "bl_soft_acc": bl_soft,
+        "cd_soft_acc": cd_soft,
+        "delta_soft": cd_soft - bl_soft,
+        "bl_em_rate": bl_em_rate,
+        "cd_em_rate": cd_em_rate,
+        "delta_em": cd_em_rate - bl_em_rate,
+        "mcnemar_b": b, "mcnemar_c": c, "mcnemar_p": mcnemar_p,
+        "wallclock_min": (time.time() - t0) / 60.0,
+    }
+    with open(out_dir / "openended_vqa_summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+    readout = out_dir / "openended_vqa_readout.txt"
+    with open(readout, "w") as f:
+        f.write(f"OK-VQA open-ended TCCD summary ({ts})\n")
+        f.write(f"Model: {MODEL_KEY}  L{TEXT_LAYER}  "
+                f"α_interp={ALPHA_INTERP}  α_cd={ALPHA_CD}\n")
+        f.write(f"First-token TCCD; greedy continuation; {MAX_NEW_TOKENS} max tokens\n\n")
+        f.write(f"n = {n}\n")
+        f.write(f"Baseline soft-acc  = {bl_soft:.4f}\n")
+        f.write(f"+CD soft-acc       = {cd_soft:.4f}\n")
+        f.write(f"Δ soft-acc         = {(cd_soft - bl_soft):+.4f}\n\n")
+        f.write(f"Baseline exact-match = {bl_em_rate:.4f}\n")
+        f.write(f"+CD exact-match      = {cd_em_rate:.4f}\n")
+        f.write(f"Δ exact-match        = {(cd_em_rate - bl_em_rate):+.4f}\n")
+        f.write(f"McNemar (exact-match): b={b}, c={c}, p={mcnemar_p:.4f}\n\n")
+        f.write(f"Wall-clock: {summary['wallclock_min']:.1f} min\n")
+    log(f"\nDone. {readout}")
+    log_file.close()
+
+
+if __name__ == "__main__":
+    main()

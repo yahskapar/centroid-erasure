@@ -10,6 +10,27 @@ import numpy as np
 from typing import Tuple
 
 
+SUPPORTED_VISUAL_FINDERS = frozenset(
+    {
+        "llava",
+        "qwen",
+        "qwen3",
+        "qwen_3b",
+        "qwen_32b",
+        "qwen3_4b",
+        "qwen3_32b",
+        "idefics3",
+        "internvl",
+        "gemma3",
+        "gemma3_12b",
+        "gemma3_27b",
+        "medgemma",
+        "medgemma_27b",
+        "llava_ov",
+    }
+)
+
+
 def find_visual_token_range(
     model_name: str,
     input_ids,
@@ -34,30 +55,32 @@ def find_visual_token_range(
     n_input = len(ids)
 
     if model_name == "llava":
-        return _find_llava(ids, seq_len, n_input)
+        span = _find_llava(ids, seq_len, n_input)
     elif model_name in ("qwen", "qwen3", "qwen_3b", "qwen_32b", "qwen3_4b", "qwen3_32b"):
-        return _find_qwen(ids, seq_len, n_input)
+        span = _find_qwen(ids, seq_len, n_input)
     elif model_name == "idefics3":
-        return _find_idefics3(ids, seq_len, n_input, processor)
+        span = _find_idefics3(ids, seq_len, n_input, processor)
     elif model_name == "internvl":
-        return _find_internvl(ids, seq_len, n_input, processor)
+        span = _find_internvl(ids, seq_len, n_input, processor)
     elif model_name in ("gemma3", "gemma3_12b", "gemma3_27b",
                         "medgemma", "medgemma_27b"):
-        return _find_gemma3(ids, seq_len, n_input)
+        span = _find_gemma3(ids, seq_len, n_input)
     elif model_name == "llava_ov":
-        return _find_llava_ov(ids, seq_len, n_input, processor)
+        span = _find_llava_ov(ids, seq_len, n_input, processor)
     else:
-        # Deliberately NOT widened to cover every MODEL_REGISTRY key. Adding a
-        # dispatch for qwen2_vl / internvl3_8b / internvl35_8b would change
-        # which code path those models take relative to the published run
-        # (they fell through to the caller's positional fallback there), and
-        # the InternVL2.5/3/3.5 longitudinal series is reported in the paper.
-        # See docs/EXTENDING.md to add a finder for your own model.
         raise ValueError(
-            f"No visual token finder for '{model_name}'. Callers fall back to a "
-            "positional heuristic, which degrades results silently. Add a finder "
-            "(docs/EXTENDING.md) before trusting numbers from this model."
+            f"No visual token finder for '{model_name}'. This model is not "
+            "validated for centroid measurement. Add a finder (docs/EXTENDING.md), "
+            "or explicitly opt into the positional heuristic for exploratory "
+            "results that must not be reported as validated."
         )
+    start, end = span
+    if not 0 <= start < end <= seq_len:
+        raise ValueError(
+            f"visual-token finder for {model_name!r} returned invalid span "
+            f"({start}, {end}) for hidden-state length {seq_len}"
+        )
+    return start, end
 
 
 def _find_llava(ids, seq_len, n_input):
@@ -68,8 +91,7 @@ def _find_llava(ids, seq_len, n_input):
         n_placeholders = len(img_positions)
         n_vision_tokens = seq_len - n_input + n_placeholders
         return start, start + n_vision_tokens
-    # Fallback
-    return 5, max(6, seq_len - 20)
+    raise _missing_marker("llava", "token id 32000")
 
 
 def _find_qwen(ids, seq_len, n_input):
@@ -86,9 +108,7 @@ def _find_qwen(ids, seq_len, n_input):
             pos = np.where(ids == special_id)[0]
             if len(pos) > 0:
                 return int(pos[0]), int(pos[0]) + n_extra
-        return 5, 5 + n_extra
-
-    return 5, max(6, seq_len - 20)
+    raise _missing_marker("qwen", "image-pad or image-boundary token")
 
 
 def _find_idefics3(ids, seq_len, n_input, processor=None):
@@ -105,12 +125,7 @@ def _find_idefics3(ids, seq_len, n_input, processor=None):
         if len(img_positions) > 0:
             return int(img_positions[0]), int(img_positions[-1]) + 1
 
-    # Fallback: extra tokens from vision encoding
-    if seq_len > n_input:
-        n_extra = seq_len - n_input
-        return 5, 5 + n_extra
-
-    return 5, max(6, seq_len - 20)
+    raise _missing_marker("idefics3", "processor image token")
 
 
 def _find_internvl(ids, seq_len, n_input, processor=None):
@@ -138,12 +153,7 @@ def _find_internvl(ids, seq_len, n_input, processor=None):
         if len(img_positions) > 0:
             return int(img_positions[0]), int(img_positions[-1]) + 1
 
-    # Fallback: if hidden state is longer than input, extra tokens are visual
-    if seq_len > n_input:
-        n_extra = seq_len - n_input
-        return 5, 5 + n_extra
-
-    return 5, max(6, seq_len - 20)
+    raise _missing_marker("internvl", "<IMG_CONTEXT> or processor image token")
 
 
 def _find_gemma3(ids, seq_len, n_input):
@@ -164,12 +174,7 @@ def _find_gemma3(ids, seq_len, n_input):
     if len(starts) > 0 and len(ends) > 0:
         return int(starts[0]) + 1, int(ends[-1])
 
-    # Fallback: extra tokens from vision encoding
-    if seq_len > n_input:
-        n_extra = seq_len - n_input
-        return 5, 5 + n_extra
-
-    return 5, max(6, seq_len - 20)
+    raise _missing_marker("gemma3", "image soft token or image brackets")
 
 
 def _find_llava_ov(ids, seq_len, n_input, processor=None):
@@ -191,12 +196,14 @@ def _find_llava_ov(ids, seq_len, n_input, processor=None):
         if len(img_positions) > 0:
             return int(img_positions[0]), int(img_positions[-1]) + 1
 
-    # Fallback: extra tokens from vision encoding
-    if seq_len > n_input:
-        n_extra = seq_len - n_input
-        return 5, 5 + n_extra
+    raise _missing_marker("llava_ov", "processor image token")
 
-    return 5, max(6, seq_len - 20)
+
+def _missing_marker(model_name, expected):
+    return ValueError(
+        f"could not locate visual-token markers for {model_name!r} "
+        f"(expected {expected}); refusing to guess a positional span"
+    )
 
 
 def estimate_grid_dims(n_tokens: int) -> Tuple[int, int]:

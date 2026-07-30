@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse, gc, json, os, sys, time, warnings
+# Avoid the cross-stage fragmentation OOM (3 stages accumulate reserved memory).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+
+warnings.filterwarnings("ignore")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+PHASE2_CENTROID = REPO_ROOT / "results" / "cross_model_v2_20260407_144343" / "qwen_centroids.npz"
+# The npz vis_centroids were FIT at LLM layer 16 (cross_model_sweep_v2 vis_layer=16),
+# so the LLM-stage hook must be L16 — applying them at L12 was a layer mismatch.
+VIS_LAYER_LLM = 16
+N_CACHE = 300         # COCO images for per-stage centroid fitting
+K = 256
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true")
+    ap.add_argument("--dry", action="store_true",
+                    help="no GPU: verify imports + that the Phase-2 npz has 3584-dim vis_centroids")
+    ap.add_argument("--n_cache", type=int, default=N_CACHE)
+    args = ap.parse_args()
+
+    if args.dry:
+        from pipeline.paper_sweep import KMeansCentroids  # noqa
+        from protocol_snapshot.rebuttal_projector_probe import (  # noqa
+            find_projector, GenericCentroidReplaceHook, cache_activations_at_site, fit_centroids)
+        from centroid_erasure.visual_tokens import find_visual_token_range  # noqa
+        z = np.load(PHASE2_CENTROID)
+        assert "vis_centroids" in z, "Phase-2 npz missing vis_centroids"
+        assert z["vis_centroids"].shape[1] == 3584, f"L12 vis dim {z['vis_centroids'].shape[1]} != 3584"
+        print(f"DRY OK: imports resolve; Phase-2 vis_centroids {z['vis_centroids'].shape} (L12 reuse).")
+        print("  Stages to fit at run: raw-ViT blocks[-1] (dim 1280), merger (dim 3584).")
+        print("  Re-run without --dry in vtg (GPU) to measure stage sufficiency.")
+        return
+
+    import torch
+    from scipy.stats import binomtest
+    from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs
+    from centroid_erasure.data.utils import parse_mc_answer
+    from centroid_erasure.data.blink import load_blink
+    from centroid_erasure.visual_tokens import find_visual_token_range
+    from pipeline.paper_sweep import KMeansCentroids
+    from protocol_snapshot.rebuttal_projector_probe import (
+        find_projector, GenericCentroidReplaceHook, cache_activations_at_site, fit_centroids, MODEL_KEY)
+
+    LETTERS = ["A", "B", "C", "D"]
+    TASKS = ["Art_Style", "Counting", "Forensic_Detection",
+             "Relative_Depth", "Spatial_Relation", "Visual_Similarity"]
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_e6_stage_sufficiency_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_file = open(out_dir / "log.txt", "a", buffering=1)
+    def log(m):
+        print(m); log_file.write(m + "\n")
+
+    log(f"=== rebuttal_e6_stage_sufficiency ({ts}) ===")
+    cfg = get_config(MODEL_KEY)
+    model, processor, _ = load_model(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    device = next(model.parameters()).device
+    pre_merger, merger = find_projector(model)
+    # RISK GUARD: confirm we hooked the right modules (wrong module = secretly post-merger)
+    log(f"  pre_merger={type(pre_merger).__name__}  merger={type(merger).__name__}")
+    assert type(pre_merger).__name__ == "Qwen2_5_VLVisionBlock", \
+        f"pre_merger is {type(pre_merger).__name__}, expected Qwen2_5_VLVisionBlock"
+    assert type(merger).__name__ == "Qwen2_5_VLPatchMerger", \
+        f"merger is {type(merger).__name__}, expected Qwen2_5_VLPatchMerger"
+
+    letter_ids = {}
+    for L in LETTERS:
+        ids = processor.tokenizer.encode(f" {L}", add_special_tokens=False)
+        assert len(ids) == 1, f"letter {L} not single-token: {ids}"
+        letter_ids[L] = ids[0]
+
+    n_cache = 20 if args.sanity else args.n_cache
+
+    # ── Fit per-stage centroids (raw-ViT 1280, merger 3584); reuse L12 vis from npz ──
+    log("\n── caching + fitting stage centroids ──")
+    X_vit = cache_activations_at_site(model, processor, pre_merger, n_cache, device, log)
+    assert X_vit is not None and X_vit.shape[1] == 1280, \
+        f"raw-ViT cache dim {None if X_vit is None else X_vit.shape[1]} != 1280"
+    mfa_vit = fit_centroids(X_vit, k=K)
+    assert mfa_vit.mu.shape[1] == 1280
+
+    X_post = cache_activations_at_site(model, processor, merger, n_cache, device, log)
+    assert X_post is not None and X_post.shape[1] == 3584, \
+        f"post-merger cache dim {None if X_post is None else X_post.shape[1]} != 3584"
+    mfa_post = fit_centroids(X_post, k=K)
+    assert mfa_post.mu.shape[1] == 3584
+
+    mfa_l12 = KMeansCentroids(np.load(PHASE2_CENTROID)["vis_centroids"])
+    assert mfa_l12.mu.shape[1] == 3584
+    log(f"  centroids: raw-ViT {mfa_vit.mu.shape}, post-merger {mfa_post.mu.shape}, L12 {mfa_l12.mu.shape}")
+
+    max_per_task = 8 if args.sanity else None
+    blink = load_blink(tasks=TASKS, split="val", max_per_task=max_per_task)
+
+    def make_l12_vis_hook(vis_mfa, input_ids, counter):
+        def hook(module, inp, output):
+            h = output[0] if isinstance(output, tuple) else output
+            if h.shape[1] <= 1:
+                return output
+            hh = h.clone(); dtype, dev = hh.dtype, hh.device; sl = hh.shape[1]
+            try:
+                vs, ve = find_visual_token_range(MODEL_KEY, input_ids, hh, processor)
+            except Exception:
+                vs, ve = 10, max(int(sl * 0.7), sl - 100)
+            if ve > vs and ve - vs >= 2:
+                vis_mfa.to_device(dev)
+                tokens = hh[0, vs:ve, :].float()
+                if tokens.shape[1] == vis_mfa.mu.shape[1]:
+                    hh[0, vs:ve, :] = vis_mfa.replace(tokens, 0.0).to(dtype)
+                    counter["n"] += 1
+            return (hh,) + output[1:] if isinstance(output, tuple) else hh
+        return hook
+
+    def eval_stage(stage_name, hook_module, mfa, l12_mode):
+        per_task = {}
+        counter = {"n": 0}
+        for task, samples in blink.items():
+            bl_c = suf_c = n = b = c = 0
+            for sample in samples:
+                gt = parse_mc_answer(sample["answer"])
+                if gt is None or gt not in LETTERS:
+                    continue
+                try:
+                    inputs, _ = prepare_inputs(MODEL_KEY, processor, sample["prompt"], sample["images"], device)
+                except Exception:
+                    continue
+                with torch.no_grad():
+                    out_n = model(**inputs)                      # baseline, NO hooks
+                logits_n = out_n.logits[0, -1, :].float()
+                pred_bl = max(LETTERS, key=lambda L: logits_n[letter_ids[L]].item())
+                if l12_mode:
+                    hook = make_l12_vis_hook(mfa, inputs["input_ids"], counter)
+                else:
+                    hook = GenericCentroidReplaceHook(mfa, alpha_interp=0.0)
+                handle = hook_module.register_forward_hook(hook)
+                try:
+                    with torch.no_grad():
+                        out_s = model(**inputs)
+                    pred_suf = max(LETTERS, key=lambda L: out_s.logits[0, -1, :].float()[letter_ids[L]].item())
+                    if not l12_mode:
+                        counter["n"] += 1   # GenericCentroidReplaceHook fires per forward
+                except (torch.cuda.OutOfMemoryError, RuntimeError):
+                    pred_suf = pred_bl
+                finally:
+                    handle.remove()
+                bl_ok = (pred_bl == gt); suf_ok = (pred_suf == gt)
+                n += 1; bl_c += int(bl_ok); suf_c += int(suf_ok)
+                if bl_ok and not suf_ok: b += 1
+                elif not bl_ok and suf_ok: c += 1
+            if n == 0:
+                continue
+            p = binomtest(min(b, c), b + c, p=0.5).pvalue if (b + c) > 0 else 1.0
+            per_task[task] = {"n": n, "bl_acc": bl_c / n, "suf_acc": suf_c / n,
+                              "cost": (bl_c - suf_c) / n, "b": b, "c": c, "p": p}
+            log(f"    {stage_name}/{task}: n={n} bl={bl_c/n:.3f} suf={suf_c/n:.3f} cost={(bl_c-suf_c)/n:+.4f} p={p:.4f}")
+        # RISK GUARD: the hook must have actually replaced something (else fake zero cost)
+        assert counter["n"] > 0, f"{stage_name}: hook never replaced tokens (dim mismatch / wrong module?)"
+        costs = [v["cost"] for v in per_task.values()]
+        return {"per_task": per_task, "mean_cost": float(np.mean(costs)) if costs else None,
+                "n_replaced_forwards": counter["n"]}
+
+    summary = {"config": {"model": MODEL_KEY, "K": K, "n_cache": n_cache,
+                          "stages": ["raw_vit_blocks_-1", "post_merger", f"llm_L{VIS_LAYER_LLM}_vis_span"]},
+               "stages": {}}
+    log("\n── raw vision-encoder output (blocks[-1], dim 1280) ──")
+    summary["stages"]["raw_vit"] = eval_stage("raw_vit", pre_merger, mfa_vit, l12_mode=False)
+    gc.collect(); torch.cuda.empty_cache()
+    log("\n── post-projector (merger, dim 3584) ──")
+    summary["stages"]["post_merger"] = eval_stage("post_merger", merger, mfa_post, l12_mode=False)
+    gc.collect(); torch.cuda.empty_cache()
+    log(f"\n── LLM L{VIS_LAYER_LLM} visual-token span (dim 3584) ──")
+    summary["stages"][f"llm_L{VIS_LAYER_LLM}"] = eval_stage(f"llm_L{VIS_LAYER_LLM}", lm_layers[VIS_LAYER_LLM], mfa_l12, l12_mode=True)
+
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    with open(out_dir / "readout.txt", "w") as f:
+        f.write(f"Multi-stage visual centroid SUFFICIENCY cost (Qwen2.5-VL-7B, alpha=0, K={K})\n\n")
+        f.write(f"{'Stage':<26s}{'mean cost':>12s}\n")
+        for k, label in [("raw_vit", "raw ViT (blocks[-1])"), ("post_merger", "post-projector (merger)"),
+                         (f"llm_L{VIS_LAYER_LLM}", f"LLM L{VIS_LAYER_LLM} visual span")]:
+            if k in summary["stages"]:
+                mc = summary["stages"][k]["mean_cost"]
+                f.write(f"{label:<26s}{mc:+12.4f}\n")
+        f.write("\nVisual-centroid replacement cost declines across the sampled stages. "
+                "The stage-specific fits use different activation spaces, so this is a "
+                "descriptive localization result rather than a cross-stage causal estimate.\n")
+    log("\nDone.")
+    log_file.close()
+
+
+if __name__ == "__main__":
+    main()

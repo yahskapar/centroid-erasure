@@ -23,6 +23,7 @@ PYTHON_VERSION="3.10.20"
 
 # Torch 2.6.0 + CUDA 12.4 is the exact combination used for the paper.
 TORCH_VERSION="2.6.0"
+TORCHVISION_VERSION="0.21.0"
 TORCH_INDEX="https://download.pytorch.org/whl/cu124"
 
 conda_setup() {
@@ -42,7 +43,8 @@ conda_setup() {
     source "$(conda info --base)/etc/profile.d/conda.sh"
     conda activate "${ENV_NAME}"
     python -m pip install --upgrade pip
-    python -m pip install "torch==${TORCH_VERSION}" --index-url "${TORCH_INDEX}"
+    python -m pip install "torch==${TORCH_VERSION}" \
+        "torchvision==${TORCHVISION_VERSION}" --index-url "${TORCH_INDEX}"
     python -m pip install -r requirements.txt
     python -m pip install --no-deps -e .
     echo ""
@@ -61,7 +63,8 @@ uv_setup() {
     fi
     uv venv --python "${PYTHON_VERSION}"
     source .venv/bin/activate
-    uv pip install "torch==${TORCH_VERSION}" --index-url "${TORCH_INDEX}"
+    uv pip install "torch==${TORCH_VERSION}" \
+        "torchvision==${TORCHVISION_VERSION}" --index-url "${TORCH_INDEX}"
     uv pip install -r requirements.txt
     uv pip install --no-deps -e .
     echo ""

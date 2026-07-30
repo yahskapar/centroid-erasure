@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import json
+import math
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STEP9_DIR = REPO_ROOT / "results" / "v4_adaptive_tccd_20260420_112046"
+TASKS_ALL = [
+    "Forensic_Detection", "Visual_Similarity", "Art_Style",
+    "Counting", "Relative_Depth", "Spatial_Relation",
+]
+SIGNALS = ["entropy", "top2_margin", "ll_pred"]
+THRESHOLDS = [0.0, 0.10, 0.25, 0.50, 0.75, 1.0]  # 0 = baseline, 1 = blanket
+N_BINS = 15  # Guo et al. 2017 standard
+
+
+def softmax(logits):
+    z = np.asarray(logits, dtype=np.float64)
+    z = z - z.max()
+    e = np.exp(z)
+    return e / e.sum()
+
+
+def load_step9_samples(sanity=False):
+    tasks = ["Forensic_Detection"] if sanity else TASKS_ALL
+    rows = []
+    for t in tasks:
+        path = STEP9_DIR / "per_sample" / f"{t}.jsonl"
+        with open(path) as f:
+            for line in f:
+                d = json.loads(line)
+                pbl = softmax(d["letter_logits_bl"])
+                pcd = softmax(d["letter_logits_cd"])
+                letters = d["letters"]
+                gt_idx = [l.lower() for l in letters].index(d["gt"].lower())
+                pred_bl_idx = int(np.argmax(pbl))
+                pred_cd_idx = int(np.argmax(pcd))
+                rows.append({
+                    "task": d["task"],
+                    "conf_bl": float(pbl[pred_bl_idx]),
+                    "conf_cd": float(pcd[pred_cd_idx]),
+                    "correct_bl": bool(pred_bl_idx == gt_idx),
+                    "correct_cd": bool(pred_cd_idx == gt_idx),
+                    "entropy": float(d["entropy"]),
+                    "top2_margin": float(d["top2_margin"]),
+                    "ll_pred": float(d["ll_pred"]),
+                })
+    return rows
+
+
+def ece_and_acc(confs, corrects, n_bins=N_BINS):
+    confs = np.asarray(confs, dtype=np.float64)
+    corrects = np.asarray(corrects, dtype=np.float64)
+    N = len(confs)
+    if N == 0:
+        return float("nan"), float("nan"), float("nan")
+    # Bin by confidence in [0, 1]; equal-width bins (Guo 2017)
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    mce = 0.0
+    for m in range(n_bins):
+        lo, hi = edges[m], edges[m + 1]
+        if m == n_bins - 1:
+            mask = (confs >= lo) & (confs <= hi)
+        else:
+            mask = (confs >= lo) & (confs < hi)
+        if mask.sum() == 0:
+            continue
+        acc_m = corrects[mask].mean()
+        conf_m = confs[mask].mean()
+        gap = abs(acc_m - conf_m)
+        ece += (mask.sum() / N) * gap
+        mce = max(mce, gap)
+    return float(ece), float(mce), float(corrects.mean())
+
+
+def selective_policy(rows, signal, threshold):
+    """
+    Returns (confs, corrects) arrays reflecting the selective policy:
+    top-`threshold` fraction by `signal` (higher = more uncertain) gets TCCD,
+    rest keeps baseline. threshold=0 → all baseline; threshold=1 → all TCCD.
+    """
+    N = len(rows)
+    if threshold <= 0:
+        return ([r["conf_bl"] for r in rows],
+                [r["correct_bl"] for r in rows])
+    if threshold >= 1.0:
+        return ([r["conf_cd"] for r in rows],
+                [r["correct_cd"] for r in rows])
+    scores = np.array([r[signal] for r in rows])
+    k = int(round(threshold * N))
+    # top-k most uncertain (largest scores) get TCCD
+    if k == 0:
+        tccd_set = set()
+    else:
+        order = np.argsort(-scores)  # descending
+        tccd_set = set(order[:k].tolist())
+    confs, corrects = [], []
+    for i, r in enumerate(rows):
+        if i in tccd_set:
+            confs.append(r["conf_cd"])
+            corrects.append(r["correct_cd"])
+        else:
+            confs.append(r["conf_bl"])
+            corrects.append(r["correct_bl"])
+    return confs, corrects
+
+
+def run(base_out, sanity):
+    tee_f = (base_out / "ece_log.txt").open("w")
+
+    def tee(msg=""):
+        print(msg)
+        print(msg, file=tee_f)
+        tee_f.flush()
+
+    tee("=" * 78)
+    tee(f"v4_ece_analysis.py  —  {datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    tee(f"  Base:     {base_out}")
+    tee(f"  Sanity:   {sanity}")
+    tee(f"  Step9 src:{STEP9_DIR}")
+    tee(f"  Tasks:    {'Forensic only' if sanity else 'all 6 BLINK'}")
+    tee(f"  Bins:     {N_BINS} (Guo et al. 2017)")
+    tee("=" * 78)
+
+    rows = load_step9_samples(sanity=sanity)
+    N = len(rows)
+    tee(f"\nLoaded {N} samples across {len({r['task'] for r in rows})} tasks.")
+
+    # ── Per-policy ECE ─────────────────────────────────────────────
+    results = {"aggregate": {}, "per_task": {}, "manifest": {
+        "n_samples": N, "n_bins": N_BINS, "sanity": sanity,
+        "signals": SIGNALS, "thresholds": THRESHOLDS,
+    }}
+
+    # Baseline + blanket TCCD (signal-independent)
+    confs_bl = [r["conf_bl"] for r in rows]
+    corr_bl = [r["correct_bl"] for r in rows]
+    confs_cd = [r["conf_cd"] for r in rows]
+    corr_cd = [r["correct_cd"] for r in rows]
+    ece_bl, mce_bl, acc_bl = ece_and_acc(confs_bl, corr_bl)
+    ece_cd, mce_cd, acc_cd = ece_and_acc(confs_cd, corr_cd)
+    results["aggregate"]["baseline"] = {
+        "ece": ece_bl, "mce": mce_bl, "acc": acc_bl, "n": N,
+    }
+    results["aggregate"]["blanket_tccd"] = {
+        "ece": ece_cd, "mce": mce_cd, "acc": acc_cd, "n": N,
+        "delta_ece_vs_baseline": ece_cd - ece_bl,
+        "delta_acc_vs_baseline": acc_cd - acc_bl,
+    }
+
+    # Selective × signals × thresholds
+    results["aggregate"]["selective"] = {}
+    for sig in SIGNALS:
+        results["aggregate"]["selective"][sig] = {}
+        for t in THRESHOLDS:
+            if t == 0.0 or t == 1.0:
+                continue  # degenerate = baseline / blanket
+            confs, corrects = selective_policy(rows, sig, t)
+            ece, mce, acc = ece_and_acc(confs, corrects)
+            results["aggregate"]["selective"][sig][f"t={t:.2f}"] = {
+                "ece": ece, "mce": mce, "acc": acc, "n": N,
+                "delta_ece_vs_baseline": ece - ece_bl,
+                "delta_ece_vs_blanket": ece - ece_cd,
+                "delta_acc_vs_baseline": acc - acc_bl,
+                "delta_acc_vs_blanket": acc - acc_cd,
+            }
+
+    # Per-task breakdown
+    for task in sorted({r["task"] for r in rows}):
+        sub = [r for r in rows if r["task"] == task]
+        confs_bl_t = [r["conf_bl"] for r in sub]
+        corr_bl_t = [r["correct_bl"] for r in sub]
+        confs_cd_t = [r["conf_cd"] for r in sub]
+        corr_cd_t = [r["correct_cd"] for r in sub]
+        ece_bl_t, _, acc_bl_t = ece_and_acc(confs_bl_t, corr_bl_t)
+        ece_cd_t, _, acc_cd_t = ece_and_acc(confs_cd_t, corr_cd_t)
+        results["per_task"][task] = {
+            "n": len(sub),
+            "baseline": {"ece": ece_bl_t, "acc": acc_bl_t},
+            "blanket_tccd": {"ece": ece_cd_t, "acc": acc_cd_t,
+                             "delta_ece": ece_cd_t - ece_bl_t,
+                             "delta_acc": acc_cd_t - acc_bl_t},
+        }
+
+    # ── Emit readable summary ──────────────────────────────────────
+    lines = []
+    lines.append(f"V4 Step 15 — ECE analysis on Step 9 Qwen7B BLINK data"
+                 f"  {datetime.now().isoformat(timespec='seconds')}")
+    lines.append("=" * 78)
+    lines.append("")
+    lines.append(f"Source: {STEP9_DIR.name}")
+    lines.append(f"N = {N} samples across {len({r['task'] for r in rows})} tasks, "
+                 f"{N_BINS} equal-width bins (Guo et al. 2017).")
+    lines.append("")
+    lines.append("━━ Aggregate ECE (lower = better calibrated) ━━")
+    lines.append("")
+    lines.append(f"  {'policy':30s}  {'ECE':>8s}  {'MCE':>8s}  {'acc':>8s}  {'ΔECE_bl':>10s}")
+    bl = results["aggregate"]["baseline"]
+    lines.append(f"  {'baseline (no CD)':30s}  {bl['ece']:8.4f}  "
+                 f"{bl['mce']:8.4f}  {bl['acc']:8.4f}  "
+                 f"{0.0:+10.4f}")
+    cd = results["aggregate"]["blanket_tccd"]
+    lines.append(f"  {'blanket TCCD (α=0.4)':30s}  {cd['ece']:8.4f}  "
+                 f"{cd['mce']:8.4f}  {cd['acc']:8.4f}  "
+                 f"{cd['delta_ece_vs_baseline']:+10.4f}")
+    for sig in SIGNALS:
+        for t_key, s in results["aggregate"]["selective"][sig].items():
+            lines.append(f"  selective [{sig:11s} {t_key}]       {s['ece']:8.4f}  "
+                         f"{s['mce']:8.4f}  {s['acc']:8.4f}  "
+                         f"{s['delta_ece_vs_baseline']:+10.4f}")
+        lines.append("")
+    lines.append("")
+
+    # Focus analysis: t=0.5 across signals
+    lines.append("━━ Focus: selective at t=0.50 vs blanket TCCD ━━")
+    lines.append("")
+    for sig in SIGNALS:
+        s = results["aggregate"]["selective"][sig]["t=0.50"]
+        verdict = "BETTER_CALIBRATED" if s["delta_ece_vs_blanket"] < -1e-4 else (
+            "WORSE_CALIBRATED" if s["delta_ece_vs_blanket"] > 1e-4 else "SAME")
+        lines.append(f"  {sig:12s}:  ECE={s['ece']:.4f}  "
+                     f"ΔECE_vs_blanket={s['delta_ece_vs_blanket']:+.4f}  "
+                     f"ΔECE_vs_baseline={s['delta_ece_vs_baseline']:+.4f}  "
+                     f"acc={s['acc']:.4f}  Δacc_vs_blanket={s['delta_acc_vs_blanket']:+.4f}  "
+                     f"[{verdict}]")
+    lines.append("")
+
+    # Per-task table (baseline vs blanket TCCD only — space)
+    lines.append("━━ Per-task: baseline vs blanket TCCD ━━")
+    lines.append("")
+    lines.append(f"  {'task':24s}  {'n':>4s}  {'ECE_bl':>8s}  {'ECE_cd':>8s}  "
+                 f"{'ΔECE':>8s}  {'acc_bl':>8s}  {'acc_cd':>8s}  {'Δacc':>8s}")
+    for task, d in results["per_task"].items():
+        lines.append(f"  {task:24s}  {d['n']:>4d}  "
+                     f"{d['baseline']['ece']:8.4f}  "
+                     f"{d['blanket_tccd']['ece']:8.4f}  "
+                     f"{d['blanket_tccd']['delta_ece']:+8.4f}  "
+                     f"{d['baseline']['acc']:8.4f}  "
+                     f"{d['blanket_tccd']['acc']:8.4f}  "
+                     f"{d['blanket_tccd']['delta_acc']:+8.4f}")
+    lines.append("")
+
+    summary_text = "\n".join(lines)
+    tee("\n" + summary_text)
+
+    (base_out / "ece_per_policy.json").write_text(json.dumps(results, indent=2))
+    (base_out / "ece_readout.txt").write_text(summary_text + "\n")
+
+    tee(f"\nSaved → {base_out / 'ece_per_policy.json'}")
+    tee(f"Saved → {base_out / 'ece_readout.txt'}")
+    tee_f.close()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true",
+                    help="Forensic_Detection only; fast sanity of ECE math")
+    ap.add_argument("--output_dir", type=str, default=None,
+                    help="Override output directory (default: results/v4_ece_analysis_<ts>/)")
+    args = ap.parse_args()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_out = Path(args.output_dir) if args.output_dir else (
+        REPO_ROOT / "results" / f"v4_ece_analysis_{ts}")
+    base_out.mkdir(parents=True, exist_ok=True)
+
+    run(base_out, sanity=args.sanity)
+
+
+if __name__ == "__main__":
+    main()

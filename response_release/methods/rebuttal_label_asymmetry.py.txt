@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import (  # noqa: E402
+    get_config, load_model, find_lm_layers, prepare_inputs,
+)
+from centroid_erasure.data.utils import parse_mc_answer  # noqa: E402
+from centroid_erasure.data.blink import load_blink  # noqa: E402
+from centroid_erasure.visual_tokens import find_visual_token_range  # noqa: E402
+from pipeline.paper_sweep import (  # noqa: E402
+    KMeansCentroids, TextCDHook,
+)
+from protocol_snapshot.rebuttal_e1_label_robustness import (  # noqa: E402
+    rewrite_prompt, CONDITION_LABELS, get_label_token_ids, get_pred_with_labels,
+    TASKS,
+)
+
+# ── Protocol constants (match cross_model_sweep_v2 + the paper anchor) ──
+MODEL_KEY = "qwen"
+TEXT_LAYER = 12
+VIS_LAYER = 16
+PHASE2_CENTROID = (
+    REPO_ROOT / "results" / "cross_model_v2_20260407_144343" / "qwen_centroids.npz"
+)
+DEFAULT_CONDITIONS = ["abcd", "npr", "symbols"]
+
+
+def eval_task_condition(model, processor, lm_layers, task, samples,
+                        text_mfa, vis_mfa, condition, out_jsonl, log):
+    """Compute alpha=0 text-erase and visual-erase COST on one task under one label set.
+
+    Mirrors cross_model_sweep_v2.run_sweep's sufficiency block exactly (text @ L12,
+    visual @ L16, alpha=0 hard nearest-centroid replacement), but on relabeled prompts
+    and scored over the relabeled answer-token subspace.
+    """
+    device = next(model.parameters()).device
+    seed_base = hash(condition) & 0xFFFFFFFF
+
+    base_c = text_c = vis_c = total = parse_fail = 0
+    per_sample = []
+
+    for si, sample in enumerate(samples):
+        gt = parse_mc_answer(str(sample.get("answer", "")))
+        if gt is None:
+            parse_fail += 1
+            continue
+        seed = (seed_base + si) & 0xFFFFFFFF
+        new_prompt, new_gt, new_labels, ok = rewrite_prompt(
+            sample.get("prompt", sample.get("question", "")), gt, condition, seed=seed,
+        )
+        if not ok:
+            parse_fail += 1
+            continue
+        images = (sample.get("images") or
+                  ([sample["image"]] if sample.get("image") else []))
+        if not images:
+            parse_fail += 1
+            continue
+
+        try:
+            inputs, _ = prepare_inputs(MODEL_KEY, processor, new_prompt, images, device)
+        except Exception as e:
+            log(f"    prepare_inputs failed @ {si}: {e}")
+            parse_fail += 1
+            continue
+        input_ids = inputs.get("input_ids")
+        label_ids = get_label_token_ids(processor, new_labels)
+
+        # ── Baseline ──
+        try:
+            with torch.no_grad():
+                out_n = model(**inputs)
+            logits_n = out_n.logits[0, -1, :].float()
+            del out_n
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            torch.cuda.empty_cache()
+            parse_fail += 1
+            continue
+        pred_bl = get_pred_with_labels(logits_n, label_ids, new_labels)
+
+        # ── Text centroid sufficiency (alpha=0 @ L12) ──
+        hook = TextCDHook(text_mfa, MODEL_KEY, processor,
+                          alpha_interp=0.0, segment="all")
+        hook.set_input(input_ids)
+        handle = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+        try:
+            with torch.no_grad():
+                out_t = model(**inputs)
+            pred_text = get_pred_with_labels(
+                out_t.logits[0, -1, :].float(), label_ids, new_labels)
+            del out_t
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            pred_text = pred_bl
+        finally:
+            handle.remove()
+
+        # ── Visual centroid sufficiency (alpha=0 @ L16) ──
+        def vis_hook_fn(module, inp, output):
+            h = output[0] if isinstance(output, tuple) else output
+            h = h.clone()
+            dtype, dev = h.dtype, h.device
+            sl = h.shape[1]
+            try:
+                vs, ve = find_visual_token_range(MODEL_KEY, input_ids, h, processor)
+            except Exception:
+                vs, ve = 10, max(int(sl * 0.7), sl - 100)
+            if ve > vs and ve - vs >= 2:
+                vis_mfa.to_device(dev)
+                tokens = h[0, vs:ve, :].float()
+                if tokens.shape[1] == vis_mfa.mu.shape[1]:
+                    replaced = vis_mfa.replace(tokens, 0.0)
+                    h[0, vs:ve, :] = replaced.to(dtype)
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+
+        handle = lm_layers[VIS_LAYER].register_forward_hook(vis_hook_fn)
+        try:
+            with torch.no_grad():
+                out_v = model(**inputs)
+            pred_vis = get_pred_with_labels(
+                out_v.logits[0, -1, :].float(), label_ids, new_labels)
+            del out_v
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            pred_vis = pred_bl
+        finally:
+            handle.remove()
+
+        total += 1
+        bl_ok = (pred_bl == new_gt)
+        t_ok = (pred_text == new_gt)
+        v_ok = (pred_vis == new_gt)
+        base_c += int(bl_ok)
+        text_c += int(t_ok)
+        vis_c += int(v_ok)
+        per_sample.append({
+            "idx": sample.get("idx", si),
+            "orig_gt": gt, "new_gt": new_gt, "new_labels": new_labels,
+            "pred_bl": pred_bl, "pred_text": pred_text, "pred_vis": pred_vis,
+            "bl_correct": bl_ok, "text_correct": t_ok, "vis_correct": v_ok,
+        })
+        del logits_n, inputs
+        if total % 25 == 0:
+            torch.cuda.empty_cache()
+
+    base_acc = base_c / max(1, total)
+    text_acc = text_c / max(1, total)
+    vis_acc = vis_c / max(1, total)
+
+    with open(out_jsonl, "w") as f:
+        for r in per_sample:
+            f.write(json.dumps(r) + "\n")
+
+    return {
+        "task": task, "condition": condition, "n": total, "parse_fail": parse_fail,
+        "baseline_acc": round(base_acc, 4),
+        "text_centroid_acc": round(text_acc, 4),
+        "vis_centroid_acc": round(vis_acc, 4),
+        "text_cost": round(base_acc - text_acc, 4),
+        "vis_cost": round(base_acc - vis_acc, 4),
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true",
+                    help="8 samples/task, conditions abcd+shuffled (~8 min)")
+    ap.add_argument("--conditions", nargs="+", default=None,
+                    help=f"subset of {list(CONDITION_LABELS.keys())}; "
+                         f"default {DEFAULT_CONDITIONS}")
+    ap.add_argument("--tasks", nargs="+", default=TASKS)
+    ap.add_argument("--cap", type=int, default=None,
+                    help="max samples per task (full val split if unset)")
+    args = ap.parse_args()
+
+    conditions = (["abcd", "npr"] if args.sanity else
+                  (args.conditions or DEFAULT_CONDITIONS))
+    for c in conditions:
+        if c not in CONDITION_LABELS:
+            print(f"FATAL: unknown condition '{c}' (choices: {list(CONDITION_LABELS)})")
+            sys.exit(1)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_label_asym_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "per_sample").mkdir(exist_ok=True)
+    log_file = open(out_dir / "label_asymmetry_log.txt", "a", buffering=1)
+
+    def log(msg):
+        print(msg)
+        log_file.write(msg + "\n")
+
+    log(f"=== rebuttal_label_asymmetry ({ts}) ===")
+    log(f"Out: {out_dir}")
+    log(f"Model: {MODEL_KEY}  text L{TEXT_LAYER}  vis L{VIS_LAYER}  alpha=0 (hard erase)")
+    log(f"Conditions: {conditions}")
+    log(f"Tasks: {args.tasks}   cap/task: {args.cap if args.cap else 'all'}")
+
+    if not PHASE2_CENTROID.exists():
+        log(f"FATAL: centroid file missing — {PHASE2_CENTROID}")
+        sys.exit(1)
+    cz = np.load(PHASE2_CENTROID)
+    text_mfa = KMeansCentroids(cz["text_centroids"])
+    vis_mfa = KMeansCentroids(cz["vis_centroids"])
+    log(f"Centroids: text {cz['text_centroids'].shape}  vis {cz['vis_centroids'].shape}")
+
+    cfg = get_config(MODEL_KEY)
+    model, processor, _ = load_model(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    log(f"Loaded {MODEL_KEY} — {len(lm_layers)} LM layers")
+
+    max_per_task = 8 if args.sanity else args.cap
+    blink = load_blink(tasks=args.tasks, split="val", max_per_task=max_per_task)
+
+    summary = {"config": {
+        "model": MODEL_KEY, "text_layer": TEXT_LAYER, "vis_layer": VIS_LAYER,
+        "alpha_interp": 0.0, "centroid_source": str(PHASE2_CENTROID),
+        "sanity": args.sanity, "cap": args.cap,
+        "tasks": args.tasks, "conditions": conditions,
+    }, "results": [], "timestamp": ts}
+    results = []
+
+    for condition in conditions:
+        log(f"\n── condition={condition} ──")
+        for task in args.tasks:
+            samples = blink.get(task, [])
+            if not samples:
+                log(f"  ⚠ {task}: no samples loaded")
+                continue
+            out_jsonl = out_dir / "per_sample" / f"{task}_{condition}.jsonl"
+            t0 = time.time()
+            r = eval_task_condition(model, processor, lm_layers, task, samples,
+                                    text_mfa, vis_mfa, condition, str(out_jsonl), log)
+            r["wallclock_min"] = round((time.time() - t0) / 60.0, 1)
+            results.append(r)
+            summary["results"].append(r)
+            log(f"  {task:22s} n={r['n']:3d}  base={r['baseline_acc']:.3f}  "
+                f"text_cost={r['text_cost']:+.3f}  vis_cost={r['vis_cost']:+.3f}  "
+                f"({r['wallclock_min']}m)")
+            with open(out_dir / "label_asymmetry_summary.json", "w") as f:
+                json.dump(summary, f, indent=2)
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    # ── Aggregate readout ──
+    readout = out_dir / "label_asymmetry_readout.txt"
+    with open(readout, "w") as f:
+        f.write(f"Label-asymmetry control  ({ts})\n")
+        f.write(f"Model {MODEL_KEY}  text L{TEXT_LAYER}  vis L{VIS_LAYER}  alpha=0\n")
+        f.write("Diagnostic: does the text>>visual centroid-cost "
+                "asymmetry persist under randomized option labels?\n\n")
+        f.write(f"{'Task':<22s}{'Cond':<10s}{'n':>4s}{'base':>8s}"
+                f"{'text$':>9s}{'vis$':>8s}\n")
+        f.write("-" * 61 + "\n")
+        per_cond = {}
+        for r in results:
+            f.write(f"{r['task']:<22s}{r['condition']:<10s}{r['n']:4d}"
+                    f"{r['baseline_acc']:8.3f}{r['text_cost']:+9.3f}{r['vis_cost']:+8.3f}\n")
+            per_cond.setdefault(r["condition"], {"t": [], "v": [], "b": []})
+            per_cond[r["condition"]]["t"].append(r["text_cost"])
+            per_cond[r["condition"]]["v"].append(r["vis_cost"])
+            per_cond[r["condition"]]["b"].append(r["baseline_acc"])
+        f.write("-" * 73 + "\n\n")
+        f.write(f"{'Condition':<12s}{'mean base':>11s}{'mean text$':>12s}"
+                f"{'mean vis$':>12s}{'ratio':>9s}\n")
+        anchor = None
+        agg = {}
+        for cond, d in per_cond.items():
+            mt = float(np.mean(d["t"]))
+            mv = float(np.mean(d["v"]))
+            mb = float(np.mean(d["b"]))
+            ratio = mt / max(abs(mv), 0.001)
+            agg[cond] = {"mean_baseline": round(mb, 4),
+                         "mean_text_cost": round(mt, 4),
+                         "mean_vis_cost": round(mv, 4),
+                         "asymmetry_ratio": round(ratio, 1)}
+            f.write(f"{cond:<12s}{mb:11.3f}{mt:+12.3f}{mv:+12.3f}{ratio:>8.1f}x\n")
+            if cond == "abcd":
+                anchor = agg[cond]
+        f.write("\nInterpretation:\n")
+        if anchor:
+            ok = anchor["asymmetry_ratio"] >= 2.0 and anchor["mean_text_cost"] >= 0.12
+            f.write(f"  abcd ANCHOR: base {anchor['mean_baseline']:.3f}  "
+                    f"text {anchor['mean_text_cost']:+.3f} vs vis "
+                    f"{anchor['mean_vis_cost']:+.3f} ({anchor['asymmetry_ratio']:.1f}x). "
+                    f"Paper BLINK ~4.1x; "
+                    f"{'OK — harness validated' if ok else 'CHECK — anchor low (likely too few samples/task; use the full split)'}.\n")
+        for cond, a in agg.items():
+            if cond == "abcd":
+                continue
+            base_drop = (anchor["mean_baseline"] - a["mean_baseline"]) if anchor else 0.0
+            if base_drop > 0.10:
+                f.write(f"  {cond}: base {a['mean_baseline']:.3f} (dropped {base_drop:+.3f} "
+                        f"vs abcd) — BASELINE COLLAPSE: the cost has reduced headroom, so this "
+                        f"condition is confounded and must NOT be read as the asymmetry weakening; "
+                        f"lean on the MME no-letter control instead.\n")
+                continue
+            persists = a["mean_text_cost"] > 0 and a["asymmetry_ratio"] >= 2.0
+            verdict = ("PERSISTS (text>>vis with baseline preserved — the asymmetry is not an "
+                       "A/B/C/D answer-letter artifact)"
+                       if persists else
+                       "WEAKENED (asymmetry attenuates though baseline is preserved — report "
+                       "honestly; the MME no-letter control still backstops the answer-letter reading)")
+            f.write(f"  {cond}: base {a['mean_baseline']:.3f}  text "
+                    f"{a['mean_text_cost']:+.3f} vs vis {a['mean_vis_cost']:+.3f} "
+                    f"({a['asymmetry_ratio']:.1f}x) -> {verdict}\n")
+
+    summary["aggregate"] = agg
+    with open(out_dir / "label_asymmetry_summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+    log(f"\nDone. Readout: {readout}")
+    log_file.close()
+
+
+if __name__ == "__main__":
+    main()

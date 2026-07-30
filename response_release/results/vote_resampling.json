@@ -1,0 +1,233 @@
+{
+  "config": {
+    "max_k": 10,
+    "model": "qwen",
+    "sanity": false,
+    "seed": 42,
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "vote_ks": [
+      2,
+      5,
+      10
+    ]
+  },
+  "results": [
+    {
+      "greedy_acc": 0.5555555555555556,
+      "n": 117,
+      "task": "Art_Style",
+      "vote@10_acc": 0.5641025641025641,
+      "vote@10_delta": 0.008547008547008548,
+      "vote@2_acc": 0.5555555555555556,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.5641025641025641,
+      "vote@5_delta": 0.008547008547008548,
+      "voting_mode": "mixed"
+    },
+    {
+      "greedy_acc": 0.6666666666666666,
+      "n": 120,
+      "task": "Counting",
+      "vote@10_acc": 0.6666666666666666,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.6666666666666666,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.6666666666666666,
+      "vote@5_delta": 0.0,
+      "voting_mode": "mixed"
+    },
+    {
+      "greedy_acc": 0.4772727272727273,
+      "n": 132,
+      "task": "Forensic_Detection",
+      "vote@10_acc": 0.48484848484848486,
+      "vote@10_delta": 0.007575757575757576,
+      "vote@2_acc": 0.4772727272727273,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.4696969696969697,
+      "vote@5_delta": -0.007575757575757576,
+      "voting_mode": "mixed"
+    },
+    {
+      "greedy_acc": 0.7903225806451613,
+      "n": 124,
+      "task": "Relative_Depth",
+      "vote@10_acc": 0.7903225806451613,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.7903225806451613,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.782258064516129,
+      "vote@5_delta": -0.008064516129032258,
+      "voting_mode": "mixed"
+    },
+    {
+      "greedy_acc": 0.8881118881118881,
+      "n": 143,
+      "task": "Spatial_Relation",
+      "vote@10_acc": 0.8741258741258742,
+      "vote@10_delta": -0.013986013986013986,
+      "vote@2_acc": 0.8881118881118881,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.8811188811188811,
+      "vote@5_delta": -0.006993006993006993,
+      "voting_mode": "mixed"
+    },
+    {
+      "greedy_acc": 0.762962962962963,
+      "n": 135,
+      "task": "Visual_Similarity",
+      "vote@10_acc": 0.7481481481481481,
+      "vote@10_delta": -0.014814814814814815,
+      "vote@2_acc": 0.762962962962963,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.7703703703703704,
+      "vote@5_delta": 0.007407407407407408,
+      "voting_mode": "mixed"
+    },
+    {
+      "greedy_acc": 0.5555555555555556,
+      "n": 117,
+      "task": "Art_Style",
+      "vote@10_acc": 0.5641025641025641,
+      "vote@10_delta": 0.008547008547008548,
+      "vote@2_acc": 0.5555555555555556,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.5384615384615384,
+      "vote@5_delta": -0.017094017094017096,
+      "voting_mode": "stoch"
+    },
+    {
+      "greedy_acc": 0.6666666666666666,
+      "n": 120,
+      "task": "Counting",
+      "vote@10_acc": 0.6666666666666666,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.625,
+      "vote@2_delta": -0.041666666666666664,
+      "vote@5_acc": 0.6583333333333333,
+      "vote@5_delta": -0.008333333333333333,
+      "voting_mode": "stoch"
+    },
+    {
+      "greedy_acc": 0.4772727272727273,
+      "n": 132,
+      "task": "Forensic_Detection",
+      "vote@10_acc": 0.4772727272727273,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.38636363636363635,
+      "vote@2_delta": -0.09090909090909091,
+      "vote@5_acc": 0.4318181818181818,
+      "vote@5_delta": -0.045454545454545456,
+      "voting_mode": "stoch"
+    },
+    {
+      "greedy_acc": 0.7903225806451613,
+      "n": 124,
+      "task": "Relative_Depth",
+      "vote@10_acc": 0.7580645161290323,
+      "vote@10_delta": -0.03225806451612903,
+      "vote@2_acc": 0.7661290322580645,
+      "vote@2_delta": -0.024193548387096774,
+      "vote@5_acc": 0.7258064516129032,
+      "vote@5_delta": -0.06451612903225806,
+      "voting_mode": "stoch"
+    },
+    {
+      "greedy_acc": 0.8881118881118881,
+      "n": 143,
+      "task": "Spatial_Relation",
+      "vote@10_acc": 0.8601398601398601,
+      "vote@10_delta": -0.027972027972027972,
+      "vote@2_acc": 0.8601398601398601,
+      "vote@2_delta": -0.027972027972027972,
+      "vote@5_acc": 0.8461538461538461,
+      "vote@5_delta": -0.04195804195804196,
+      "voting_mode": "stoch"
+    },
+    {
+      "greedy_acc": 0.762962962962963,
+      "n": 135,
+      "task": "Visual_Similarity",
+      "vote@10_acc": 0.7703703703703704,
+      "vote@10_delta": 0.007407407407407408,
+      "vote@2_acc": 0.7555555555555555,
+      "vote@2_delta": -0.007407407407407408,
+      "vote@5_acc": 0.7333333333333333,
+      "vote@5_delta": -0.02962962962962963,
+      "voting_mode": "stoch"
+    },
+    {
+      "greedy_acc": 0.5555555555555556,
+      "n": 117,
+      "task": "Art_Style",
+      "vote@10_acc": 0.5555555555555556,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.5555555555555556,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.5555555555555556,
+      "vote@5_delta": 0.0,
+      "voting_mode": "greedy"
+    },
+    {
+      "greedy_acc": 0.6666666666666666,
+      "n": 120,
+      "task": "Counting",
+      "vote@10_acc": 0.6666666666666666,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.6666666666666666,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.6666666666666666,
+      "vote@5_delta": 0.0,
+      "voting_mode": "greedy"
+    },
+    {
+      "greedy_acc": 0.4772727272727273,
+      "n": 132,
+      "task": "Forensic_Detection",
+      "vote@10_acc": 0.4772727272727273,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.4772727272727273,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.4772727272727273,
+      "vote@5_delta": 0.0,
+      "voting_mode": "greedy"
+    },
+    {
+      "greedy_acc": 0.7903225806451613,
+      "n": 124,
+      "task": "Relative_Depth",
+      "vote@10_acc": 0.7903225806451613,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.7903225806451613,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.7903225806451613,
+      "vote@5_delta": 0.0,
+      "voting_mode": "greedy"
+    },
+    {
+      "greedy_acc": 0.8881118881118881,
+      "n": 143,
+      "task": "Spatial_Relation",
+      "vote@10_acc": 0.8881118881118881,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.8881118881118881,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.8881118881118881,
+      "vote@5_delta": 0.0,
+      "voting_mode": "greedy"
+    },
+    {
+      "greedy_acc": 0.762962962962963,
+      "n": 135,
+      "task": "Visual_Similarity",
+      "vote@10_acc": 0.762962962962963,
+      "vote@10_delta": 0.0,
+      "vote@2_acc": 0.762962962962963,
+      "vote@2_delta": 0.0,
+      "vote@5_acc": 0.762962962962963,
+      "vote@5_delta": 0.0,
+      "voting_mode": "greedy"
+    }
+  ]
+}

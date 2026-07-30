@@ -1,0 +1,621 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import math
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import (  # noqa: E402
+    get_config, load_model, find_lm_layers, prepare_inputs,
+)
+from centroid_erasure.eval_mcqa import get_choice_token_ids  # noqa: E402
+from centroid_erasure.data.utils import parse_mc_answer  # noqa: E402
+from centroid_erasure.data.blink import load_blink  # noqa: E402
+from protocol_snapshot.latent_factor_cd import ALL_LETTERS  # noqa: E402
+from pipeline.paper_sweep import (  # noqa: E402
+    KMeansCentroids, wilson_ci, numpy_safe,
+)
+
+# ── Protocol constants (match Phase 2) ──
+TEXT_LAYER = 12
+ALPHA_CD = 1.0
+N_LETTERS = 4
+SWEEP_ALPHAS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+PRIMARY_ALPHA_INTERP = 0.4
+
+BLINK_TASKS = [
+    "Forensic_Detection", "Visual_Similarity", "Art_Style",
+    "Counting", "Relative_Depth", "Spatial_Relation",
+]
+
+PHASE2_DIR = REPO_ROOT / "results" / "cross_model_v2_20260407_144343"
+DEFAULT_MODELS = ["qwen"]  # Primary per V4 §2 Step 8
+
+# Sanity
+SANITY_MODEL = "qwen"
+SANITY_TASK = "Forensic_Detection"
+SANITY_N = 20
+SANITY_ALPHAS = [0.4]
+
+
+def tee_print(msg, log_path=None):
+    print(msg, flush=True)
+    if log_path is not None:
+        with open(log_path, "a") as f:
+            f.write(msg + "\n")
+
+
+# ── VisCDHook: mirror of TextCDHook, targets [vis_start, vis_end) ──────
+
+class VisCDHook:
+    """Contrastive-decoding hook that replaces VISUAL tokens with their
+    nearest visual-centroid at the target layer.
+
+    Mirrors TextCDHook but operates on the visual-token range — everything
+    upstream (layer registration, two-forward contrastive logic) is
+    identical.
+    """
+
+    def __init__(self, mfa_vis, model_name, processor, alpha_interp=0.4):
+        self.mfa_vis = mfa_vis
+        self.model_name = model_name
+        self.processor = processor
+        self.alpha_interp = alpha_interp
+        self._input_ids = None
+
+    def set_input(self, input_ids):
+        self._input_ids = input_ids
+
+    def __call__(self, module, input, output):
+        from centroid_erasure.visual_tokens import find_visual_token_range
+        h = output[0] if isinstance(output, tuple) else output
+        h = h.clone()
+        dtype, device = h.dtype, h.device
+        seq_len = h.shape[1]
+
+        try:
+            vis_start, vis_end = find_visual_token_range(
+                self.model_name, self._input_ids, h, self.processor)
+        except Exception:
+            # No visual range → hook is a no-op; caller sees unchanged logits.
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+
+        if vis_end <= vis_start or vis_start < 0 or vis_end > seq_len:
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+
+        self.mfa_vis.to_device(device)
+        tokens = h[0, vis_start:vis_end, :].float()
+        if tokens.shape[1] != self.mfa_vis.mu.shape[1]:
+            # hidden_dim mismatch — shouldn't happen if using same-model
+            # centroids, but fail safely.
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+
+        replaced = self.mfa_vis.replace(tokens, self.alpha_interp)
+        h[0, vis_start:vis_end, :] = replaced.to(dtype)
+        return (h,) + output[1:] if isinstance(output, tuple) else h
+
+
+# ── McNemar's test (same def as cross_model_v2) ────────────────────────
+
+def mcnemar_p(per_sample, correct_key):
+    b = sum(1 for s in per_sample if s["bl_correct"] and not s.get(correct_key, False))
+    c = sum(1 for s in per_sample if not s["bl_correct"] and s.get(correct_key, False))
+    n_discordant = b + c
+    if n_discordant == 0:
+        return 0, 0, 1.0
+    chi2 = (c - b) ** 2 / n_discordant
+    try:
+        from scipy.stats import chi2 as chi2_dist
+        return b, c, float(chi2_dist.sf(chi2, df=1))
+    except ImportError:
+        # Conservative fallback
+        return b, c, 0.05 if abs(chi2) > 3.84 else 0.5
+
+
+# ── Evaluation (VIS-CCD across α grid on one model × one task × samples) ──
+
+def eval_task(model, processor, model_name, lm_layers, device,
+               vis_mfa, task, samples, letters, cids, alphas, log_fn=None):
+    """Baseline forward + one hooked forward per α. Returns task-level
+    stats matching cross_model_v2's alpha_sweep block schema."""
+    per_sample = []
+    baseline_correct = 0
+    task_alpha_results = {a: {"correct": 0, "total": 0} for a in alphas}
+    t_task = time.time()
+    total = 0
+
+    for sample in samples:
+        prompt = sample.get("prompt", "")
+        images = sample.get("images") or []
+        if not images:
+            continue
+        try:
+            inputs, _ = prepare_inputs(model_name, processor, prompt,
+                                        images, device)
+        except Exception:
+            continue
+        input_ids = inputs.get("input_ids")
+        gt = parse_mc_answer(str(sample.get("answer", "")))
+
+        # Baseline forward
+        try:
+            with torch.no_grad():
+                out_bl = model(**inputs)
+            logits_bl = out_bl.logits[0, -1, :].float()
+            del out_bl
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            torch.cuda.empty_cache()
+            continue
+        if not torch.isfinite(logits_bl).all():
+            continue
+        letter_logits_bl = [
+            logits_bl[cids[L]].item() if L in cids else float("-inf")
+            for L in letters
+        ]
+        pred_bl = letters[int(np.argmax(
+            [v if np.isfinite(v) else -1e9 for v in letter_logits_bl]))]
+        bl_correct = pred_bl.lower() == (gt or "").lower()
+        if bl_correct:
+            baseline_correct += 1
+        total += 1
+        sample_preds = {"bl_correct": bl_correct}
+
+        # α sweep
+        for alpha in alphas:
+            hook = VisCDHook(vis_mfa, model_name, processor,
+                             alpha_interp=alpha)
+            hook.set_input(input_ids)
+            handle = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    out_er = model(**inputs)
+                logits_er = out_er.logits[0, -1, :].float()
+                del out_er
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                handle.remove()
+                torch.cuda.empty_cache()
+                continue
+            handle.remove()
+
+            letter_logits_er = [
+                logits_er[cids[L]].item() if L in cids else float("-inf")
+                for L in letters
+            ]
+            # CD formula (same as TCCD, just with vis-erased reference)
+            letter_logits_cd = [
+                letter_logits_bl[i] + ALPHA_CD * (letter_logits_bl[i] -
+                                                    letter_logits_er[i])
+                if (np.isfinite(letter_logits_bl[i]) and
+                    np.isfinite(letter_logits_er[i]))
+                else float("-inf")
+                for i in range(N_LETTERS)
+            ]
+            pred_cd = letters[int(np.argmax(
+                [v if np.isfinite(v) else -1e9 for v in letter_logits_cd]))]
+            cd_correct = pred_cd.lower() == (gt or "").lower()
+            task_alpha_results[alpha]["total"] += 1
+            if cd_correct:
+                task_alpha_results[alpha]["correct"] += 1
+            sample_preds[f"cd_{alpha}"] = cd_correct
+
+            del logits_er
+
+        per_sample.append(sample_preds)
+        del logits_bl, inputs
+        if total % 30 == 0:
+            torch.cuda.empty_cache()
+
+    # Compile per-task block
+    bl_acc = baseline_correct / total if total else 0.0
+    _, bl_lo, bl_hi = wilson_ci(baseline_correct, total)
+    alpha_results = {}
+    for alpha in alphas:
+        ar = task_alpha_results[alpha]
+        cd_acc = ar["correct"] / ar["total"] if ar["total"] else 0.0
+        b, c, p = mcnemar_p(per_sample, f"cd_{alpha}")
+        _, cd_lo, cd_hi = wilson_ci(ar["correct"], ar["total"])
+        alpha_results[str(alpha)] = {
+            "cd_accuracy": round(cd_acc, 4),
+            "cd_ci": [round(cd_lo, 4), round(cd_hi, 4)],
+            "delta": round(cd_acc - bl_acc, 4),
+            "n": ar["total"],
+            "mcnemar_b": b,
+            "mcnemar_c": c,
+            "mcnemar_p": round(p, 4),
+        }
+    if alpha_results:
+        best = max(alpha_results.items(), key=lambda x: x[1]["delta"])
+        best_alpha = best[0]
+        best_delta = best[1]["delta"]
+    else:
+        best_alpha, best_delta = str(PRIMARY_ALPHA_INTERP), 0.0
+
+    task_block = {
+        "baseline": round(bl_acc, 4),
+        "baseline_ci": [round(bl_lo, 4), round(bl_hi, 4)],
+        "n": total,
+        "alphas": alpha_results,
+        "best_alpha": best_alpha,
+        "best_delta": round(best_delta, 4),
+    }
+    if log_fn:
+        primary = alpha_results.get(str(PRIMARY_ALPHA_INTERP), {}).get("delta", 0.0)
+        log_fn(f"    {task:22s}  bl={bl_acc:.3f}  "
+               f"Δ@α={PRIMARY_ALPHA_INTERP}={primary:+.4f}  "
+               f"best_α={best_alpha} best_Δ={best_delta:+.4f}  "
+               f"[{(time.time()-t_task):.0f}s, n={total}]")
+    return task_block
+
+
+# ── Per-model runner ───────────────────────────────────────────────────
+
+def run_one_model(model_key, blink, alphas, out_dir, log_path,
+                   samples_per_task=None, task_order=None):
+    out_path = out_dir / f"{model_key}_vis_ccd_sweep.json"
+    if out_path.exists():
+        tee_print(f"\n[{model_key}] sweep JSON exists; skipping.", log_path)
+        return
+
+    # Load centroids
+    npz_path = PHASE2_DIR / f"{model_key}_centroids.npz"
+    if not npz_path.exists():
+        tee_print(f"[{model_key}] MISSING centroids at {npz_path}; skipping.",
+                  log_path)
+        return
+    npz = np.load(npz_path)
+    if "vis_centroids" not in npz.files:
+        tee_print(f"[{model_key}] NO vis_centroids in {npz_path.name}; skip.",
+                  log_path)
+        return
+    vis_c = npz["vis_centroids"].astype(np.float32)
+    vis_mfa = KMeansCentroids(vis_c)
+    tee_print(f"\n{'='*72}\n[{model_key}] vis_centroids shape {vis_c.shape}",
+              log_path)
+
+    # Load model
+    tee_print(f"  Loading {model_key}...", log_path)
+    cfg = get_config(model_key)
+    model, processor, _ = load_model(model_key)
+    device = next(model.parameters()).device
+    lm_layers = find_lm_layers(model, cfg)
+    tee_print(f"    OK: n_layers={len(lm_layers)}, device={device}", log_path)
+
+    letters = ALL_LETTERS[:N_LETTERS]
+    cids = get_choice_token_ids(processor, letters)
+
+    # Eval per task
+    tasks_to_run = task_order if task_order is not None else BLINK_TASKS
+    results = {
+        "method": "vis_ccd",
+        "model": model_key,
+        "alpha_sweep": {},
+    }
+    t_model = time.time()
+    for task in tasks_to_run:
+        samples = blink.get(task, [])
+        if samples_per_task is not None:
+            samples = samples[:samples_per_task]
+        if not samples:
+            continue
+        block = eval_task(
+            model, processor, model_key, lm_layers, device,
+            vis_mfa, task, samples, letters, cids, alphas,
+            log_fn=lambda m: tee_print(m, log_path),
+        )
+        results["alpha_sweep"][task] = block
+
+    # Summary
+    all_best = [v["best_delta"] for v in results["alpha_sweep"].values()]
+    all_primary = [
+        v["alphas"].get(str(PRIMARY_ALPHA_INTERP), {}).get("delta", 0)
+        for v in results["alpha_sweep"].values()
+    ]
+    results["_summary"] = {
+        "method": "vis_ccd",
+        "model": model_key,
+        "n_tasks": len(results["alpha_sweep"]),
+        "mean_best_delta": round(float(np.mean(all_best)), 4) if all_best else 0.0,
+        "mean_primary_delta": round(float(np.mean(all_primary)), 4) if all_primary else 0.0,
+        "primary_alpha_interp": PRIMARY_ALPHA_INTERP,
+        "alpha_cd": ALPHA_CD,
+        "alphas_swept": alphas,
+        "elapsed_seconds": round(time.time() - t_model, 1),
+    }
+
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2, default=numpy_safe)
+    s = results["_summary"]
+    tee_print(f"  [{model_key}] DONE in {s['elapsed_seconds']/60:.1f}m  "
+              f"mean best-Δ: {s['mean_best_delta']:+.4f}  "
+              f"mean primary-Δ: {s['mean_primary_delta']:+.4f}",
+              log_path)
+
+    del model, processor, vis_mfa
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+# ── Comparison: VIS-CCD vs TCCD (from existing Phase 2) ────────────────
+
+def compile_comparison(out_dir, models_run, log_path):
+    """Side-by-side VIS-CCD vs TCCD (paper's Phase 2) for each model."""
+    tee_print(f"\n{'#'*72}\n# VIS-CCD vs TCCD comparison\n{'#'*72}", log_path)
+
+    comparison = {
+        "timestamp": datetime.now().isoformat(),
+        "models": {},
+        "predictions": {
+            "aggregate_vis_ccd_smaller_than_tccd": None,
+            "per_task_pattern_differs": None,
+        },
+    }
+
+    tee_print(f"\n  {'Model':<14s}{'TCCD best':>12s}{'VIS-CCD best':>14s}"
+              f"{'ratio':>8s}  {'TCCD α=0.4':>12s}{'VIS-CCD α=0.4':>14s}",
+              log_path)
+    tee_print("  " + "-" * 78, log_path)
+
+    any_vis_ccd_smaller = True
+    for mk in models_run:
+        vis_path = out_dir / f"{mk}_vis_ccd_sweep.json"
+        tccd_path = PHASE2_DIR / f"{mk}_sweep.json"
+        if not vis_path.exists() or not tccd_path.exists():
+            continue
+        v = json.load(open(vis_path))
+        t = json.load(open(tccd_path))
+        vs = v.get("_summary", {})
+        ts = t.get("_summary", {})
+        tccd_best = ts.get("mean_best_delta", 0.0)
+        vis_best = vs.get("mean_best_delta", 0.0)
+        tccd_p04 = ts.get("mean_fixed_delta", 0.0)
+        vis_p04 = vs.get("mean_primary_delta", 0.0)
+
+        ratio = abs(vis_best / tccd_best) if abs(tccd_best) > 1e-6 else float("inf")
+
+        comparison["models"][mk] = {
+            "tccd_best_delta": tccd_best,
+            "vis_ccd_best_delta": vis_best,
+            "ratio_vis_over_tccd_best": round(ratio, 3),
+            "tccd_primary_alpha04": tccd_p04,
+            "vis_ccd_primary_alpha04": vis_p04,
+            "per_task": {
+                task: {
+                    "tccd_best_delta": t.get("alpha_sweep", {}).get(task, {}).get("best_delta"),
+                    "vis_ccd_best_delta": v.get("alpha_sweep", {}).get(task, {}).get("best_delta"),
+                }
+                for task in BLINK_TASKS
+            },
+        }
+        if vis_best >= tccd_best - 0.005:
+            any_vis_ccd_smaller = False
+
+        tee_print(f"  {mk:<14s}{tccd_best:>+12.4f}{vis_best:>+14.4f}"
+                  f"{ratio:>8.3f}  {tccd_p04:>+12.4f}{vis_p04:>+14.4f}",
+                  log_path)
+
+    comparison["predictions"]["aggregate_vis_ccd_smaller_than_tccd"] = \
+        bool(any_vis_ccd_smaller)
+
+    # Verdict on asymmetry directionality
+    all_ratios = [
+        m["ratio_vis_over_tccd_best"]
+        for m in comparison["models"].values()
+        if isinstance(m["ratio_vis_over_tccd_best"], (int, float))
+           and m["ratio_vis_over_tccd_best"] != float("inf")
+    ]
+    if all_ratios:
+        mean_ratio = float(np.mean(all_ratios))
+        comparison["mean_vis_over_tccd_best_ratio"] = round(mean_ratio, 3)
+        if mean_ratio < 0.4:
+            comparison["verdict"] = "STRONG_DIRECTIONAL"
+        elif mean_ratio < 0.7:
+            comparison["verdict"] = "MODERATE_DIRECTIONAL"
+        elif mean_ratio < 1.0:
+            comparison["verdict"] = "WEAK_DIRECTIONAL"
+        else:
+            comparison["verdict"] = "NULL_OR_REVERSED"
+        tee_print(f"\n  Mean VIS-CCD/TCCD best-Δ ratio: {mean_ratio:.3f}",
+                  log_path)
+        tee_print(f"  Verdict: {comparison['verdict']}", log_path)
+
+    sp = out_dir / "vis_ccd_comparison.json"
+    with open(sp, "w") as f:
+        json.dump(comparison, f, indent=2, default=numpy_safe)
+    tee_print(f"\nSaved → {sp}", log_path)
+
+    # Readout
+    tp = out_dir / "vis_ccd_readout.txt"
+    with open(tp, "w") as f:
+        f.write(f"VIS-CCD symmetric control (V4 Step 8)  "
+                f"{comparison['timestamp']}\n")
+        f.write("=" * 76 + "\n\n")
+        f.write("Replaces VISUAL tokens (instead of TCCD's text tokens) with\n"
+                "nearest visual centroid at L12; same α_cd=1.0, same α_interp\n"
+                "grid, same BLINK 6 tasks as Phase 2. Tests whether the paper's\n"
+                "~4× measured asymmetry (text_cost >> vis_cost) holds at the\n"
+                "INTERVENTION level: if it does, VIS-CCD aggregate best-Δ should\n"
+                "be substantially SMALLER than TCCD's.\n\n")
+
+        f.write(f"{'Model':<16s}{'TCCD best':>12s}{'VIS-CCD best':>14s}"
+                f"{'ratio':>10s}\n")
+        f.write("-" * 54 + "\n")
+        for mk, m in comparison["models"].items():
+            f.write(f"{mk:<16s}{m['tccd_best_delta']:>+12.4f}"
+                    f"{m['vis_ccd_best_delta']:>+14.4f}"
+                    f"{m['ratio_vis_over_tccd_best']:>10.3f}\n")
+
+        if "mean_vis_over_tccd_best_ratio" in comparison:
+            f.write(f"\nMean VIS-CCD/TCCD best-Δ ratio: "
+                    f"{comparison['mean_vis_over_tccd_best_ratio']:.3f}\n")
+            f.write(f"Verdict: {comparison['verdict']}\n\n")
+
+        # Per-task pattern check
+        f.write("\n━━ Per-task best-Δ side-by-side ━━\n\n")
+        for mk, m in comparison["models"].items():
+            f.write(f"[{mk}]\n")
+            f.write(f"  {'Task':<22s}{'TCCD':>10s}{'VIS-CCD':>12s}\n")
+            for task, pt in m["per_task"].items():
+                tccd_td = pt["tccd_best_delta"]
+                vis_td = pt["vis_ccd_best_delta"]
+                f.write(f"  {task:<22s}"
+                        f"{(f'{tccd_td:+.4f}' if tccd_td is not None else '—'):>10s}"
+                        f"{(f'{vis_td:+.4f}' if vis_td is not None else '—'):>12s}\n")
+            f.write("\n")
+
+    tee_print(f"Saved → {tp}", log_path)
+    return comparison
+
+
+# ── Main ───────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--models", type=str, default=",".join(DEFAULT_MODELS),
+                        help=f"Comma-separated model keys. Default: "
+                             f"{DEFAULT_MODELS}. Phase 2 centroid files must "
+                             f"exist under {PHASE2_DIR.name}/.")
+    parser.add_argument("--sanity", action="store_true",
+                        help="~3-5 min: qwen × Forensic × 20 samples × α=0.4.")
+    parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--resume_from", type=str, default=None,
+                        help="Resume: skips models whose _vis_ccd_sweep.json exists.")
+    args = parser.parse_args()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if args.sanity:
+        models = [SANITY_MODEL]
+        alphas = SANITY_ALPHAS
+        task_order = [SANITY_TASK]
+        samples_per_task = SANITY_N
+        base_out = REPO_ROOT / "results" / f"v4_vis_ccd_sanity_{ts}"
+    elif args.resume_from:
+        base_out = Path(args.resume_from)
+        if not base_out.exists():
+            print(f"ERROR: --resume_from not found: {base_out}", file=sys.stderr)
+            sys.exit(2)
+        models = [m.strip() for m in args.models.split(",") if m.strip()]
+        alphas = SWEEP_ALPHAS
+        task_order = None
+        samples_per_task = None
+    else:
+        base_out = (Path(args.output_dir) if args.output_dir
+                    else REPO_ROOT / "results" / f"v4_vis_ccd_{ts}")
+        models = [m.strip() for m in args.models.split(",") if m.strip()]
+        alphas = SWEEP_ALPHAS
+        task_order = None
+        samples_per_task = None
+    base_out.mkdir(parents=True, exist_ok=True)
+
+    log_path = base_out / "vis_ccd_log.txt"
+    manifest_path = base_out / "vis_ccd_manifest.json"
+    manifest = {
+        "timestamp": ts, "base_out": str(base_out),
+        "sanity": bool(args.sanity),
+        "models": models,
+        "alphas": alphas,
+        "task_order": task_order,
+        "samples_per_task": samples_per_task,
+        "protocol": {
+            "text_layer": TEXT_LAYER, "alpha_cd": ALPHA_CD,
+            "primary_alpha_interp": PRIMARY_ALPHA_INTERP,
+            "phase2_centroid_dir": str(PHASE2_DIR),
+        },
+    }
+    if manifest_path.exists():
+        try:
+            prior = json.load(open(manifest_path))
+            manifest["prior_runs"] = manifest.get("prior_runs", []) + [prior]
+        except Exception:
+            pass
+
+    tee_print(f"\n{'='*78}", log_path)
+    tee_print(f"v4_vis_ccd.py  —  {ts}", log_path)
+    tee_print(f"  Base:      {base_out}", log_path)
+    tee_print(f"  Sanity:    {args.sanity}", log_path)
+    tee_print(f"  Models:    {models}", log_path)
+    tee_print(f"  Alphas:    {alphas}", log_path)
+    tee_print(f"  Tasks:     {task_order or 'all 6 BLINK'}", log_path)
+    tee_print(f"  Samples/task: {samples_per_task or 'all val'}", log_path)
+    tee_print(f"{'='*78}", log_path)
+
+    # Load BLINK once
+    blink = load_blink(tasks=(task_order or BLINK_TASKS), split="val")
+
+    t_start = time.time()
+    for mk in models:
+        try:
+            run_one_model(
+                mk, blink, alphas, base_out, log_path,
+                samples_per_task=samples_per_task, task_order=task_order,
+            )
+        except Exception as e:
+            tee_print(f"\n[{mk}] FATAL: {type(e).__name__}: {e}", log_path)
+            import traceback
+            tee_print(traceback.format_exc(), log_path)
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2, default=str)
+
+    # Sanity verdict
+    if args.sanity:
+        tee_print(f"\n{'='*78}\nSANITY VERDICT\n{'='*78}", log_path)
+        vp = base_out / f"{SANITY_MODEL}_vis_ccd_sweep.json"
+        if not vp.exists():
+            tee_print("  ✗ FAIL: no sweep JSON written.", log_path)
+            sys.exit(3)
+        d = json.load(open(vp))
+        t = d.get("alpha_sweep", {}).get(SANITY_TASK, {})
+        bl = t.get("baseline", 0)
+        a04 = t.get("alphas", {}).get("0.4", {})
+        delta = a04.get("delta", 0.0)
+        bc = a04.get("mcnemar_b", 0) + a04.get("mcnemar_c", 0)
+        ok = (t.get("n", 0) >= int(SANITY_N * 0.8)
+              and 0.1 <= bl <= 0.9
+              and bc > 0)
+        tee_print(f"  n = {t.get('n')}  bl = {bl:.3f}  "
+                  f"Δ@α=0.4 = {delta:+.4f}  b+c = {bc}", log_path)
+        tee_print(f"  Verdict: {'✓ PASS' if ok else '✗ SUSPICIOUS'}",
+                  log_path)
+        if not ok:
+            tee_print("  Investigate before main run.", log_path)
+        sys.exit(0 if ok else 4)
+
+    # Compile comparison for non-sanity runs
+    models_run = [m for m in models
+                  if (base_out / f"{m}_vis_ccd_sweep.json").exists()]
+    if models_run:
+        compile_comparison(base_out, models_run, log_path)
+
+    manifest["analysis"] = "done" if models_run else "no models completed"
+    manifest["overall_elapsed_min"] = round((time.time() - t_start) / 60, 2)
+    manifest["finished_at"] = datetime.now().isoformat()
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2, default=str)
+
+    tee_print(f"\n{'='*78}\nDONE — {(time.time()-t_start)/60:.1f}m total",
+              log_path)
+    tee_print(f"  Base:     {base_out}", log_path)
+
+
+if __name__ == "__main__":
+    main()

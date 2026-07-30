@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse, gc, json, re, sys, time, warnings
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+import torch
+from scipy.stats import binomtest
+
+warnings.filterwarnings("ignore")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import get_config, find_lm_layers, prepare_inputs  # noqa
+from centroid_erasure.data.utils import parse_mc_answer  # noqa
+from centroid_erasure.data.blink import load_blink  # noqa
+
+MODEL_KEY = "qwen"
+LETTERS = ["A", "B", "C", "D"]
+TASKS = ["Art_Style", "Counting", "Forensic_Detection",
+         "Relative_Depth", "Spatial_Relation", "Visual_Similarity"]
+DEFAULT_LAMBDAS = [0.5, 1.0, 5.0, 10.0, 50.0]
+OPERA_LAST_K = 3
+
+
+def load_model_eager(model_key):
+    cfg = get_config(model_key)
+    from transformers import AutoModelForImageTextToText, AutoProcessor
+    proc = AutoProcessor.from_pretrained(cfg.model_id, trust_remote_code=True)
+    m = AutoModelForImageTextToText.from_pretrained(
+        cfg.model_id, torch_dtype=cfg.dtype, device_map="auto",
+        low_cpu_mem_usage=True, attn_implementation="eager",
+    )
+    return m, proc, cfg
+
+
+def find_letter_token_positions(input_ids, letter_ids, processor):
+    """Return {L: [token_positions]} by SCANNING ALL TOKENS for any whose
+    decoded string contains the letter character L (and not other letters).
+
+    The naive approach of looking up token_id(' A') misses many occurrences
+    because BLINK prompts tokenize '(A)' as multiple tokens where 'A'
+    appears inside a larger BPE piece. We instead decode each token
+    individually and check if the LETTER is present as a clean substring.
+    """
+    ids_arr = input_ids[0].cpu().numpy()
+    out = {L: [] for L in LETTERS}
+    tokenizer = processor.tokenizer
+    for pos, tid in enumerate(ids_arr):
+        decoded = tokenizer.decode([int(tid)], skip_special_tokens=False)
+        # Match if decoded contains exactly one of {A,B,C,D} surrounded by
+        # non-alphanumeric boundaries (so "Alpha" doesn't count for "A")
+        for L in LETTERS:
+            # Patterns that match an option-letter occurrence in a BLINK-style prompt
+            for pat in (f"({L})", f"({L}", f"{L})", f" {L} ", f" {L}\n",
+                        f"\n{L})", f"({L} "):
+                if pat in decoded:
+                    out[L].append(pos)
+                    break
+            else:
+                # Last resort: check if the decoded IS the letter (with whitespace)
+                if decoded.strip() == L:
+                    out[L].append(pos)
+    return out
+
+
+def per_letter_attention_penalty(attentions, last_position, letter_positions, lam):
+    """Per-letter penalty: penalize letters whose option-text positions
+    receive above-average attention from the last position."""
+    if attentions is None or len(attentions) < OPERA_LAST_K:
+        return {L: 0.0 for L in LETTERS}
+    # Sum attention from last_position to each letter's positions, averaged
+    # over heads across last K LLM layers.
+    attn_per_letter = {L: 0.0 for L in LETTERS}
+    n_layers_used = 0
+    for layer_attn in attentions[-OPERA_LAST_K:]:
+        if layer_attn is None:
+            continue
+        head_attn = layer_attn[0]  # (H, T, T)
+        # last_position's attention to all earlier positions, averaged over heads
+        last_row = head_attn[:, last_position, :].mean(dim=0).float().cpu().numpy()
+        for L in LETTERS:
+            for pos in letter_positions.get(L, []):
+                if pos < len(last_row):
+                    attn_per_letter[L] += float(last_row[pos])
+        n_layers_used += 1
+    if n_layers_used == 0:
+        return {L: 0.0 for L in LETTERS}
+    for L in LETTERS:
+        attn_per_letter[L] /= n_layers_used
+    mean_attn = sum(attn_per_letter.values()) / 4.0
+    # Penalty = max(0, attn - mean) * λ
+    return {L: max(0.0, attn_per_letter[L] - mean_attn) * lam for L in LETTERS}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true")
+    ap.add_argument("--lambdas", nargs="+", type=float, default=DEFAULT_LAMBDAS)
+    args = ap.parse_args()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_opera_v2_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "opera_v2_log.txt"
+    log_file = open(log_path, "a", buffering=1)
+    def log(m):
+        print(m); log_file.write(m + "\n")
+
+    log(f"=== rebuttal_opera_v2 ({ts}) ===")
+    log(f"lambdas={args.lambdas}  sanity={args.sanity}")
+
+    model, processor, cfg = load_model_eager(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    log(f"Loaded {MODEL_KEY} with eager attention; {len(lm_layers)} LM layers")
+    letter_ids = {L: processor.tokenizer.encode(f" {L}", add_special_tokens=False)[0]
+                  for L in LETTERS}
+    device = next(model.parameters()).device
+
+    max_per_task = 8 if args.sanity else None
+    blink_data = load_blink(tasks=TASKS, split="val", max_per_task=max_per_task)
+
+    # Per-lambda, per-task results
+    summary = {"config": {"model": MODEL_KEY, "lambdas": args.lambdas,
+                          "K_layers": OPERA_LAST_K},
+               "per_lambda": {}}
+
+    # Debug: print letter positions found in first sample of first task
+    first_task = next(iter(blink_data))
+    first_sample = blink_data[first_task][0] if blink_data[first_task] else None
+    if first_sample:
+        try:
+            inputs, _ = prepare_inputs(MODEL_KEY, processor, first_sample["prompt"],
+                                       first_sample["images"], device)
+            positions = find_letter_token_positions(inputs["input_ids"], letter_ids, processor)
+            log(f"DEBUG first sample letter positions: " + ", ".join(
+                f"{L}={len(positions[L])} matches" for L in LETTERS))
+            log(f"DEBUG sample positions: " + str({L: positions[L][:3] for L in LETTERS}))
+        except Exception as e:
+            log(f"DEBUG failed: {e}")
+
+    for lam in args.lambdas:
+        log(f"\n── λ = {lam} ──")
+        per_task = {}
+        for task, samples in blink_data.items():
+            if not samples:
+                continue
+            bl_c = op_c = n = 0
+            b = c = 0
+            for sample in samples:
+                gt = parse_mc_answer(sample["answer"])
+                if gt is None or gt not in LETTERS:
+                    continue
+                try:
+                    inputs, _ = prepare_inputs(MODEL_KEY, processor, sample["prompt"],
+                                               sample["images"], device)
+                except Exception:
+                    continue
+                try:
+                    with torch.no_grad():
+                        out = model(**inputs, output_attentions=True)
+                except Exception:
+                    continue
+                logits = out.logits[0, -1, :].float()
+                pred_bl = max(LETTERS, key=lambda L: logits[letter_ids[L]].item())
+                letter_pos = find_letter_token_positions(
+                    inputs["input_ids"], letter_ids, processor)
+                last_pos = inputs["input_ids"].shape[1] - 1
+                penalty = per_letter_attention_penalty(
+                    out.attentions, last_pos, letter_pos, lam)
+                penalized = {L: logits[letter_ids[L]].item() - penalty[L]
+                             for L in LETTERS}
+                pred_op = max(LETTERS, key=lambda L: penalized[L])
+                bl_ok = (pred_bl == gt); op_ok = (pred_op == gt)
+                bl_c += int(bl_ok); op_c += int(op_ok)
+                if bl_ok and not op_ok: b += 1
+                elif not bl_ok and op_ok: c += 1
+                n += 1
+                del out
+                if n % 25 == 0:
+                    torch.cuda.empty_cache()
+            if n == 0:
+                continue
+            p = binomtest(min(b, c), b + c, p=0.5).pvalue if (b + c) > 0 else 1.0
+            per_task[task] = {"n": n, "bl": bl_c / n, "op": op_c / n,
+                              "delta": (op_c - bl_c) / n, "b": b, "c": c,
+                              "mcnemar_p": p}
+            log(f"  {task}: n={n} bl={bl_c/n:.4f} op={op_c/n:.4f} "
+                f"Δ={per_task[task]['delta']:+.4f} p={p:.4f}")
+        if per_task:
+            tot_n = sum(t["n"] for t in per_task.values())
+            tot_bl = sum(t["bl"] * t["n"] for t in per_task.values())
+            tot_op = sum(t["op"] * t["n"] for t in per_task.values())
+            tot_b = sum(t["b"] for t in per_task.values())
+            tot_c = sum(t["c"] for t in per_task.values())
+            mean_delta = (tot_op - tot_bl) / max(1, tot_n)
+            p_all = (binomtest(min(tot_b, tot_c), tot_b + tot_c, p=0.5).pvalue
+                     if (tot_b + tot_c) > 0 else 1.0)
+            summary["per_lambda"][lam] = {
+                "per_task": per_task, "mean_delta": mean_delta,
+                "n_total": tot_n, "mcnemar_p": p_all,
+            }
+            log(f"  → λ={lam} MEAN: n={tot_n}  Δ={mean_delta:+.4f}  p={p_all:.4f}")
+        with open(out_dir / "opera_v2_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+
+    with open(out_dir / "opera_v2_readout.txt", "w") as f:
+        f.write(f"OPERA v2 per-letter penalty ({ts})\n\n")
+        f.write(f"{'λ':<8s}{'n':>6s}{'Mean Δ':>12s}{'McNemar p':>14s}\n")
+        for lam, r in summary["per_lambda"].items():
+            f.write(f"{lam:<8.1f}{r['n_total']:6d}{r['mean_delta']:+12.4f}"
+                    f"{r['mcnemar_p']:14.4f}\n")
+    log("Done.")
+    log_file.close()
+
+
+if __name__ == "__main__":
+    main()

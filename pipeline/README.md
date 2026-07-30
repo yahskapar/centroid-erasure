@@ -1,86 +1,65 @@
-# pipeline/ — the published run
+# Phase-2 reference pipeline
 
-`paper_sweep.py` is the script that produced the numbers in the paper. It is
-kept here **deliberately unrefactored**.
+`paper_sweep.py` is the six-task, seven-model sweep behind the released
+centroid banks and Phase-2 fixtures. It fits a fresh text/visual centroid pair
+for every model, then runs centroid sufficiency, the interpolation sweep, and
+the segment ablation. It does not cover the paper's preliminary or auxiliary
+experiments.
 
-The library in `centroid_erasure/` is a clean extraction of the same method,
-and `main.py` is a convenience CLI over it. Both are easier to read and to
-build on. Neither is what generated the published results.
+## Paper protocol
 
-Keeping the two apart means the library can be reorganised freely without any
-risk of silently changing a number that appears in the paper. If a result from
-the library and a result from this script ever disagree, **this script is the
-reference**, and the disagreement is a bug worth reporting.
+The defaults fix the quantities that affect the reported results:
 
-Compared with the retained working script, the edits made to **this file** for
-release were:
+- 2,000 images from the pinned `detection-datasets/coco` train revision;
+- the prompt `Describe what you see in this image.\nAnswer:`;
+- data seed 1337, K-means seed 42, and K=256;
+- text layer 12 and visual layer 16 for the seven paper models;
+- the pinned BLINK validation revision and its exact six-task sample counts;
+- interpolation values 0.0–0.8, contrastive strength 1.0, and segment dose 0.4;
+- immutable model and remote-code revisions from the model registry.
 
-* updating the usage examples to the public path,
-* repointing private imports at the packaged `centroid_erasure.*` modules,
-* correcting a stale introductory comment from K=512 to the actual K=256, and
-* pinning the existing COCO source to its immutable commit.
+`--sanity` deliberately uses 400 COCO images and eight BLINK examples per
+task. The alpha, seed, and segment flags likewise create an alternate
+configuration; every selected value is stored in `config.json` and in result
+provenance.
 
-The numerical method and sample selection are unchanged; the revision pin
-freezes the same dataset state that the original floating reference resolved to.
+## Running
 
-### Release hardening in modules this file imports
-
-Being precise, because "no logic changed" would otherwise overstate it. This
-script imports `parse_mc_answer` from `centroid_erasure/data/utils.py`, and
-that helper was widened from A-D to A-H. The original returned `None` for an
-answer like `(E)`, which made the item score wrong regardless of the model's
-output, so widening it can only turn a guaranteed-wrong item into a scorable
-one. Every benchmark in the paper has at most four options, so no published
-number is affected.
-
-The seven paper model IDs and BLINK are now pinned to immutable commits. Six
-registry decoder paths were also updated to the direct
-`model.language_model.layers` location used by `transformers==5.4.0`; the
-previous heuristic fallback resolved that same decoder stack, so this removes
-ambiguity without changing the hooked modules.
-
-`centroid_erasure/visual_tokens.py`, which this script also imports, is
-**unchanged** from the original dispatch, including the three registry keys
-that deliberately have no finder. See `docs/PROTOCOL.md`.
-
-## Running it
-
-```
+```bash
 python pipeline/paper_sweep.py --help
+python pipeline/paper_sweep.py
+python pipeline/paper_sweep.py --models qwen,llava_ov
 ```
 
-It expects the benchmarks to be available through the loaders in
-`centroid_erasure/data/`. A full seven-model sweep is a multi-hour job on a
-single A6000.
+A full seven-model run takes many GPU-hours. The pipeline always fits fresh
+banks; use `main.py measure` or `main.py tccd` to evaluate the shipped banks.
 
-**It refits centroids from COCO every run and does not read `centroids/`.**
-That is deliberate: the script is preserved as it was when it produced the
-published numbers, so it is not given a new flag to load the shipped banks.
+Each run directory contains the exact requested configuration, one loadable
+centroid artifact per completed fit, and one result JSON per completed model.
+Artifacts and results are written atomically. Provenance records model and
+dataset revisions, layers, exact harvest/task counts, the actual K-means
+backend and version, the artifact SHA-256, and the run configuration.
 
-If you want to use the shipped banks, use the CLI instead, which reads them
-directly and needs no COCO download:
+Resume with:
 
+```bash
+python pipeline/paper_sweep.py --resume_from results/cross_model_v2_...
 ```
-python main.py measure --model qwen
-python main.py tccd    --model qwen --protocol fixed
-```
 
-`main.py fit` mirrors this script's harvest exactly (same prompt, same COCO
-source and split, same shuffle seed, same span resolution, same float16
-storage), so a bank fitted through the CLI is comparable to the shipped ones.
-That correspondence is enforced by `tests/test_fidelity.py`.
+The saved configuration must equal the requested configuration exactly. An
+existing model result is skipped only when every requested task, count, alpha,
+and segment cell is present; an incompatible or incomplete result is refused.
 
-## Known caveat carried over from the published run
+## Failure behavior
 
-The historical script asks FAISS for `gpu=True`, but CPU-only FAISS versions
-can silently ignore that flag. This behavior is preserved here because this is
-the reference script. Run it only with a visible FAISS GPU when reproducing the
-original fit. The public `main.py fit` path detects this case and truthfully
-falls back to sklearn instead of recording a false `faiss-gpu` backend.
+COCO fitting requires exactly the requested number of successful visual and
+text contributions. A full BLINK run requires the released count for every
+task. Visual-span detection fails closed unless
+`--allow_visual_span_fallback` is explicitly supplied. Any baseline or
+intervention failure aborts that model result—an intervention is never
+replaced by its baseline prediction.
 
-Centroids are sensitive to the prompt context they are harvested in. A
-separate internal pipeline that harvested COCO text activations under a
-different prompt template produced an internally consistent but different
-centroid set, shifting per-task deltas by up to about 4.5 pp. Both pipelines
-reproduce themselves; they do not reproduce each other. `paper_sweep.py` is
-the harvest path used for every published number.
+FAISS is used only when it reports a visible GPU and fitting succeeds.
+Otherwise the script uses `sklearn.MiniBatchKMeans` and records that actual
+backend and version. Backend changes can move refitted centroids, so compare
+runs only when their fitting configurations and recorded backends match.

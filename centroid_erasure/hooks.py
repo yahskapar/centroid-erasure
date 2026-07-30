@@ -16,8 +16,10 @@ from .visual_tokens import find_visual_token_range
 
 TEXT_SEGMENTS = ("all", "options", "question", "system")
 
-# Where the question ends and the options begin, as a fraction of the
-# post-image span. Matches the paper pipeline.
+# Legacy names retained for bitwise fidelity and fixture compatibility:
+# "question" = first 70% of the post-image tail, "options" = last 30%, and
+# "system" = the pre-visual prefix (including template/control tokens). The
+# published pipeline did not parse semantic question/option/system boundaries.
 OPTION_BOUNDARY_FRAC = 0.7
 
 # Minimum visual span the published hook will act on (`ve - vs >= 2`).
@@ -42,7 +44,13 @@ class CentroidReplacementHook:
         layer: decoder layer index to hook. Paper: 12 for text, 16 for visual.
         alpha_interp: 0.0 = full collapse, 1.0 = identity. Paper default 0.4.
         modality: "text" or "visual".
-        segment: for text only — which span to erase. One of TEXT_SEGMENTS.
+        segment: for text only — legacy positional-span identifier. ``all``
+            rewrites the post-image tail, ``question`` its first 70%,
+            ``options`` its last 30%, and ``system`` the pre-visual prefix.
+            These names do not denote parsed semantic boundaries.
+        allow_span_fallback: opt into the historical positional heuristic when
+            architecture-specific visual-token detection fails. Disabled by
+            default so trusted runs cannot silently use guessed spans.
     """
 
     def __init__(
@@ -55,6 +63,7 @@ class CentroidReplacementHook:
         alpha_interp=0.4,
         modality="text",
         segment="all",
+        allow_span_fallback=False,
     ):
         if modality not in ("text", "visual"):
             raise ValueError(f"modality must be text or visual, got {modality!r}")
@@ -69,6 +78,7 @@ class CentroidReplacementHook:
         self.alpha_interp = alpha_interp
         self.modality = modality
         self.segment = segment
+        self.allow_span_fallback = allow_span_fallback
 
         self._input_ids = None
         self._handle = None
@@ -78,6 +88,15 @@ class CentroidReplacementHook:
 
     def set_input(self, input_ids):
         """Give the hook the current batch's input_ids before the forward pass."""
+        if (
+            input_ids is not None
+            and getattr(input_ids, "ndim", 0) >= 2
+            and input_ids.shape[0] != 1
+        ):
+            raise ValueError(
+                "CentroidReplacementHook supports batch size 1 only; "
+                f"received input_ids batch size {input_ids.shape[0]}"
+            )
         self._input_ids = input_ids
         return self
 
@@ -88,9 +107,15 @@ class CentroidReplacementHook:
             vis_start, vis_end = find_visual_token_range(
                 self.model_name, self._input_ids, hidden, self.processor
             )
-        except Exception:
-            # Same fallback the paper pipeline uses when span detection fails.
+        except Exception as exc:
             self._span_failures += 1
+            if not self.allow_span_fallback:
+                raise RuntimeError(
+                    "visual-token span detection failed; refusing the positional "
+                    "heuristic. Add an architecture-specific finder, or explicitly "
+                    "set allow_span_fallback=True for an unvalidated exploratory run."
+                ) from exc
+            # Historical positional heuristic, available only by explicit opt-in.
             vis_end = max(int(seq_len * 0.7), seq_len - 100)
             vis_start = 10
 
@@ -117,6 +142,11 @@ class CentroidReplacementHook:
 
     def __call__(self, module, inputs, output):
         hidden = output[0] if isinstance(output, tuple) else output
+        if hidden.shape[0] != 1:
+            raise ValueError(
+                "CentroidReplacementHook supports batch size 1 only; "
+                f"received hidden-state batch size {hidden.shape[0]}"
+            )
         hidden = hidden.clone()
         dtype = hidden.dtype
         self.bank.to_device(hidden.device)

@@ -5,7 +5,7 @@ Used for POPE and similar benchmarks with binary responses.
 """
 
 import torch
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 def get_binary_token_ids(processor) -> Dict[str, List[int]]:

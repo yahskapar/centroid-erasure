@@ -83,6 +83,32 @@ def main():
           f"alpha_interp={args.alpha_interp}, alpha_cd={args.alpha_cd}")
     print()
 
+    try:
+        text_bank = CentroidBank.load(
+            cpath, modality="text", expected_model=args.model
+        )
+        vis_bank = CentroidBank.load(
+            cpath, modality="visual", expected_model=args.model
+        )
+    except (OSError, KeyError, ValueError) as exc:
+        raise SystemExit(f"cannot use centroid bank at {cpath}: {exc}") from exc
+    if (
+        text_bank.meta.get("allow_visual_span_fallback")
+        or text_bank.meta.get("span_fallbacks", 0)
+    ):
+        raise SystemExit(
+            "demo refuses a bank fitted with the unvalidated positional "
+            "visual-span fallback"
+        )
+    if (
+        text_bank.meta["layer"] != PAPER_PROTOCOL["text_layer"]
+        or vis_bank.meta["layer"] != PAPER_PROTOCOL["visual_layer"]
+    ):
+        raise SystemExit(
+            "centroid bank layers do not match the demo protocol "
+            f"(text L{PAPER_PROTOCOL['text_layer']}, "
+            f"visual L{PAPER_PROTOCOL['visual_layer']})"
+        )
     model, processor, _ = load_model(args.model)
     device = next(model.parameters()).device
     # BLINK is 4-way; match the published pipeline's letter set exactly.
@@ -92,8 +118,6 @@ def main():
     if len(set(choice_ids.values())) != len(choice_ids):
         raise SystemExit(f"answer letters do not have distinct token IDs: {choice_ids}")
 
-    text_bank = CentroidBank.load(cpath, modality="text")
-    vis_bank = CentroidBank.load(cpath, modality="visual")
     hidden_dim = getattr(model.config, "text_config", model.config).hidden_size
     if text_bank.dim != hidden_dim or vis_bank.dim != hidden_dim:
         raise SystemExit(

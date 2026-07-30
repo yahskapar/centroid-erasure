@@ -6,25 +6,26 @@ Everything needed to compare a run against the published one.
 
 | Setting | Value |
 |---|---|
-| Source data | MS-COCO, streamed from `detection-datasets/coco` revision `cf0b22332314a937e9dc8a1957b21725430bb41d`, **train** split, and shuffled with the data seed. Held out from the evaluation benchmarks: zero overlap with BLINK. |
+| Source data | MS-COCO, streamed from `detection-datasets/coco` revision `cf0b22332314a937e9dc8a1957b21725430bb41d`, **train** split, and shuffled with the data seed. Fitting is label- and evaluation-prompt-disjoint from BLINK; exact image-source overlap was not exhaustively audited. |
 | Images | N = 2,000 |
 | Clusters | K = 256 |
 | Text harvest layer | L12 |
 | Visual harvest layer | L16 |
+| Text harvest prompt | Fixed generic prompt: `Describe what you see in this image.\nAnswer:` |
+| Text activations | 16 post-image tokens/image; 32,000 total |
 | Data seed | 1337 |
 | K-means seed | 42 |
-| Backend | `faiss-gpu` when a FAISS GPU is visible, else `sklearn.MiniBatchKMeans` |
+| Backend | The published banks were fit with FAISS-GPU (historical package version unrecorded). Both public fit paths verify a visible FAISS GPU, record the backend/version actually used, and otherwise use `sklearn.MiniBatchKMeans`; a fallback run is not a published-protocol match. |
 
 The fitting CLI will not silently switch sources: alternate COCO mirrors require
 `--allow-coco-fallback`, and their banks are not paper reproductions. Newly
 fitted banks embed source/revision, model/revision, layers, prompt, package
 versions, seeds, backend, and span-fallback counts as JSON metadata.
 
-K = 256 and N = 2,000 come from a 30-cell N x K scaling grid. The signal is
-essentially flat across N in [1K, 50K] and K in [128, 2048] (mean best delta
-5.2% +/- 0.4% across all cells), so this protocol picks the smallest N and K
-that preserve the signal at low compute cost. Larger K is not worse; it is
-just more expensive.
+The 30-cell N x K grid spans N in [1K, 50K] and K in [128, 2048]. Its mean
+oracle-best delta is 5.2% +/- 0.4% across cells, with no monotone trend.
+N = 2,000 and K = 256 are a low-compute point near the lower end, not the
+minimum; the grid supports broad robustness, not equivalence of every cell.
 
 ## Intervention
 
@@ -71,7 +72,8 @@ mixing them up is the easiest way to overstate a result.
 
 * Answers are scored by argmax over the answer-letter token logits at the
   final position, not by parsing generated text.
-* Significance uses McNemar's test on paired per-item outcomes.
+* Significance uses the uncorrected asymptotic McNemar test on paired
+  per-item outcomes, matching `pipeline/paper_sweep.py`.
 * Confidence intervals are Wilson intervals.
 
 ## Benchmarks
@@ -95,21 +97,26 @@ benchmark's own taxonomy.
   original fit's `faiss-gpu` package version was not logged. This does not
   affect evaluation with the shipped banks, but byte-identical refitting is not
   claimed.
-* **`faiss` vs `sklearn`** produce different centers. Runs are comparable
-  within a backend, not necessarily across.
-* **Prompt-context sensitivity.** Centroids harvested under a different prompt
-  template form an internally consistent but different set. In our own testing
-  two such pipelines each reproduced themselves while differing from each other
-  by up to about 4.5 pp on per-task deltas. `pipeline/paper_sweep.py` is the
-  harvest path behind every published number.
-* **Refit stability.** Across five K-means seeds (42, 800, 1337, 2024, 8320) at
-  the fixed protocol, per-task standard deviation was at most 1.9 pp, and the
-  TEXT-COMPETES > TEXT-NEEDED group separation held in every refit.
+* **`faiss` vs `sklearn`** produce different centers. Matching the backend is
+  necessary but not sufficient for a refit comparison: prompt rendering,
+  preprocessing, data, K, seeds, and package versions must also match.
+* **Harvest and fitting sensitivity.** The paper fits on the fixed generic
+  prompt above and then applies the banks to semantically different evaluation
+  prompts. Reproduce the fixed harvest prompt, chat template, image rendering,
+  processor versions, K, and fitting backend when refitting. A separate
+  sensitivity grid kept the generic prompt but used K=512 with `sklearn`,
+  rather than the paper pipeline's K=256 with FAISS; per-task deltas differed
+  by up to about 4.5 pp, so compare variation only within a matched fitting
+  harness.
+* **Refit stability (Qwen2.5-VL-7B only).** Holding data seed 1337, N = 2,000,
+  K = 256, FAISS-GPU, and `alpha_interp = 0.4` fixed, five K-means fits (seeds
+  42, 800, 1337, 2024, 8320) had a maximum unrounded per-task standard
+  deviation of 1.83 pp. The post-hoc TEXT-COMPETES > TEXT-NEEDED group
+  ordering held in all five refits. The other six models were not refit.
 
 ## Deliberate divergences from the original working code
 
-Two places where this release differs from the private working repo, both
-recorded here so nobody has to rediscover them by diffing:
+Two release-specific clarifications are recorded here:
 
 1. **`parse_mc_answer` accepts A-H, not just A-D.** The original stopped at D,
    so an answer like `(E)` returned `None` and the item scored wrong no matter
@@ -117,10 +124,11 @@ recorded here so nobody has to rediscover them by diffing:
    a scorable one. No published number moves, because every benchmark in the
    paper has at most four options.
 
-2. **`find_visual_token_range` was NOT widened** to cover every registry key.
-   `qwen2_vl`, `internvl3_8b` and `internvl35_8b` still raise, and callers fall
-   back to a positional heuristic. That is exactly what happened in the
-   published run, and the InternVL2.5/3/3.5 longitudinal series in the appendix
-   depends on it. Adding a finder for those keys would silently change that
-   series. If you want one, add it deliberately and expect your numbers to
-   differ from ours. See `docs/EXTENDING.md`.
+2. **`find_visual_token_range` is not widened by guesswork.** `qwen2_vl`,
+   `internvl3_8b` and `internvl35_8b` have no validated finder and therefore
+   fail closed. Missing marker tokens also raise for a nominally supported
+   architecture. The historical positional heuristic is available only
+   through the clearly named `--allow-visual-span-fallback` opt-in, and outputs
+   from that path must not be reported as validated. Add and empirically
+   validate a real finder before extending the supported set; see
+   `docs/EXTENDING.md`.

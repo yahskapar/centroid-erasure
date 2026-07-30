@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import re
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs
+from pipeline.paper_sweep import (
+    KMeansCentroids,
+    TextCDHook,
+    numpy_safe,
+)
+
+# ── Protocol ──
+MODEL_NAME = "qwen"   # Qwen2.5-VL-7B primary deep-dive
+TEXT_LAYER = 12
+DEFAULT_ALPHA_INTERP = 0.4
+DEFAULT_ALPHA_CD = 1.0
+DEFAULT_MAX_NEW_TOKENS = 48
+DEFAULT_N_IMAGES = 200
+DEFAULT_PROMPT = "Describe this image in a few sentences."
+
+PHASE2_CENTROID_PATH = "results/cross_model_v2_20260407_144343/qwen_centroids.npz"
+
+# 80 COCO object categories (order matches detection-datasets/coco ClassLabel IDs 0-79)
+COCO_CATEGORIES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag",
+    "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite",
+    "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana",
+    "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza",
+    "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table",
+    "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+    "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock",
+    "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+
+# Synonym dict for caption-side object detection (standard CHAIR synonyms subset)
+CATEGORY_SYNONYMS = {
+    "person": ["person", "people", "man", "woman", "child", "children", "boy",
+                "girl", "human", "pedestrian", "adult", "kid", "guy", "lady",
+                "men", "women", "persons"],
+    "bicycle": ["bicycle", "bike", "bicycles", "bikes"],
+    "car": ["car", "cars", "sedan", "automobile", "automobiles"],
+    "motorcycle": ["motorcycle", "motorbike", "motorcycles", "motorbikes"],
+    "airplane": ["airplane", "plane", "aircraft", "jet", "airplanes", "planes"],
+    "bus": ["bus", "buses"],
+    "train": ["train", "trains"],
+    "truck": ["truck", "trucks", "lorry"],
+    "boat": ["boat", "boats", "ship", "ships", "canoe", "sailboat"],
+    "traffic light": ["traffic light", "traffic lights", "stoplight", "signal"],
+    "fire hydrant": ["fire hydrant", "hydrant", "fire hydrants"],
+    "stop sign": ["stop sign", "stop signs"],
+    "parking meter": ["parking meter", "parking meters"],
+    "bench": ["bench", "benches"],
+    "bird": ["bird", "birds"],
+    "cat": ["cat", "cats", "kitten", "kitty"],
+    "dog": ["dog", "dogs", "puppy", "puppies"],
+    "horse": ["horse", "horses", "pony"],
+    "sheep": ["sheep", "lamb", "lambs"],
+    "cow": ["cow", "cows", "cattle", "bull", "bulls"],
+    "elephant": ["elephant", "elephants"],
+    "bear": ["bear", "bears"],
+    "zebra": ["zebra", "zebras"],
+    "giraffe": ["giraffe", "giraffes"],
+    "backpack": ["backpack", "backpacks"],
+    "umbrella": ["umbrella", "umbrellas"],
+    "handbag": ["handbag", "handbags", "purse", "purses"],
+    "tie": ["tie", "ties", "necktie"],
+    "suitcase": ["suitcase", "suitcases", "luggage"],
+    "frisbee": ["frisbee", "frisbees"],
+    "skis": ["skis", "ski"],
+    "snowboard": ["snowboard", "snowboards"],
+    "sports ball": ["ball", "balls", "football", "soccer ball", "basketball",
+                     "tennis ball", "baseball"],
+    "kite": ["kite", "kites"],
+    "baseball bat": ["baseball bat", "bat"],
+    "baseball glove": ["baseball glove", "glove", "mitt"],
+    "skateboard": ["skateboard", "skateboards"],
+    "surfboard": ["surfboard", "surfboards"],
+    "tennis racket": ["tennis racket", "racket", "racquet"],
+    "bottle": ["bottle", "bottles"],
+    "wine glass": ["wine glass", "wineglass"],
+    "cup": ["cup", "cups", "mug", "mugs"],
+    "fork": ["fork", "forks"],
+    "knife": ["knife", "knives"],
+    "spoon": ["spoon", "spoons"],
+    "bowl": ["bowl", "bowls"],
+    "banana": ["banana", "bananas"],
+    "apple": ["apple", "apples"],
+    "sandwich": ["sandwich", "sandwiches"],
+    "orange": ["orange", "oranges"],
+    "broccoli": ["broccoli"],
+    "carrot": ["carrot", "carrots"],
+    "hot dog": ["hot dog", "hotdog", "hot dogs"],
+    "pizza": ["pizza", "pizzas"],
+    "donut": ["donut", "doughnut", "donuts", "doughnuts"],
+    "cake": ["cake", "cakes"],
+    "chair": ["chair", "chairs"],
+    "couch": ["couch", "sofa", "couches", "sofas"],
+    "potted plant": ["potted plant", "plant", "plants", "houseplant"],
+    "bed": ["bed", "beds"],
+    "dining table": ["dining table", "table", "tables"],
+    "toilet": ["toilet", "toilets"],
+    "tv": ["tv", "television", "televisions", "tvs", "monitor"],
+    "laptop": ["laptop", "laptops", "computer"],
+    "mouse": ["mouse"],
+    "remote": ["remote", "remote control"],
+    "keyboard": ["keyboard", "keyboards"],
+    "cell phone": ["cell phone", "cellphone", "phone", "phones", "smartphone",
+                    "mobile phone"],
+    "microwave": ["microwave", "microwaves"],
+    "oven": ["oven", "ovens", "stove"],
+    "toaster": ["toaster", "toasters"],
+    "sink": ["sink", "sinks"],
+    "refrigerator": ["refrigerator", "refrigerators", "fridge"],
+    "book": ["book", "books"],
+    "clock": ["clock", "clocks"],
+    "vase": ["vase", "vases"],
+    "scissors": ["scissors"],
+    "teddy bear": ["teddy bear", "teddy", "teddy bears"],
+    "hair drier": ["hair drier", "hair dryer", "hairdryer"],
+    "toothbrush": ["toothbrush", "toothbrushes"],
+}
+
+
+def tokenize_caption(text):
+    """Simple whitespace + punctuation tokenization."""
+    return [w.lower().strip() for w in re.findall(r"[a-zA-Z]+(?:\s+[a-zA-Z]+)?",
+                                                    text.lower())]
+
+
+def find_objects_in_caption(caption):
+    """
+    Return the set of COCO category names mentioned in the caption.
+    Uses word-boundary matching against synonym list.
+    """
+    caption_lower = " " + caption.lower() + " "
+    mentioned = set()
+    for cat, synonyms in CATEGORY_SYNONYMS.items():
+        for syn in synonyms:
+            # Word-boundary match; "cat" must not match "caterpillar"
+            pattern = r"\b" + re.escape(syn) + r"\b"
+            if re.search(pattern, caption_lower):
+                mentioned.add(cat)
+                break
+    return mentioned
+
+
+def chair_metrics(mentioned, gt_objects):
+    """
+    Given the set of mentioned COCO categories in a caption and the set of
+    GT categories actually in the image, compute CHAIRi and related metrics.
+
+    Returns dict with chair_i, recall, has_hallucination (bool for CHAIRs).
+    """
+    hallucinated = mentioned - gt_objects
+    chair_i = len(hallucinated) / max(1, len(mentioned))
+    recall = len(mentioned & gt_objects) / max(1, len(gt_objects))
+    return {
+        "chair_i": chair_i,
+        "recall": recall,
+        "has_hallucination": len(hallucinated) > 0,
+        "mentioned": sorted(mentioned),
+        "hallucinated": sorted(hallucinated),
+    }
+
+
+def generate_baseline(model, processor, prompt, image, device, max_new_tokens):
+    """Standard greedy generation using model.generate() with KV cache."""
+    inputs, _ = prepare_inputs(MODEL_NAME, processor, prompt, [image], device)
+    with torch.no_grad():
+        out = model.generate(
+            **inputs, max_new_tokens=max_new_tokens,
+            do_sample=False, temperature=1.0,
+            pad_token_id=processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id,
+        )
+    # Strip the prompt prefix
+    in_len = inputs["input_ids"].shape[1]
+    new_tokens = out[0, in_len:].tolist()
+    text = processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
+    return text, new_tokens
+
+
+def _align_attention_mask(inputs):
+    """
+    Qwen2.5-VL processor occasionally returns attention_mask with length
+    mismatched to input_ids by 1 (tokenizer/image-placeholder edge case on
+    some COCO val images). model.generate() handles this internally; raw
+    model(**inputs) does not. We align attention_mask to input_ids length
+    by overwriting with all-ones (no padding in batch size 1 anyway).
+    """
+    if "attention_mask" in inputs and inputs["attention_mask"] is not None:
+        if inputs["attention_mask"].shape[-1] != inputs["input_ids"].shape[-1]:
+            inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
+    return inputs
+
+
+def _normalize_inputs(inputs):
+    """
+    Force attention_mask to match input_ids length exactly (batch size 1,
+    no padding → all-ones). Also drop position_ids/cache_position if present
+    so the model recomputes cleanly. Needed for transformers 5.x where the
+    processor can return attention_mask off-by-one vs the internal
+    image-token-expanded sequence on some COCO val image sizes.
+    """
+    inputs = dict(inputs)
+    inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
+    for k in ("position_ids", "cache_position"):
+        inputs.pop(k, None)
+    return inputs
+
+
+class GenerationTimeErasureHook:
+    """
+    Simpler hook for use during model.generate() with KV cache.
+    Replaces every hidden-state token at L12 with its K-means centroid
+    (interpolated by alpha_interp). Unlike TextCDHook, doesn't need to
+    distinguish visual vs text positions — during generation with KV cache,
+    the hook sees either the full original sequence (first step) or just
+    the new token (subsequent steps). Either way we replace the LAST token
+    (the about-to-be-generated one) with its centroid; for first step we
+    also replace any text tokens after the visual range if available.
+    """
+    def __init__(self, mfa, alpha_interp=0.4):
+        self.mfa = mfa
+        self.alpha_interp = alpha_interp
+
+    def __call__(self, module, input, output):
+        h = output[0] if isinstance(output, tuple) else output
+        h = h.clone()
+        dtype, dev = h.dtype, h.device
+        self.mfa.to_device(dev)
+
+        # h shape: (1, seq_len, hidden). Replace the LAST ~30% of tokens
+        # (a heuristic stand-in for "text segment" when we lack input_ids).
+        # For single-token KV-cached steps, this replaces just the new token.
+        seq = h.shape[1]
+        start = max(0, seq - max(1, int(seq * 0.3))) if seq > 1 else 0
+        tokens = h[0, start:, :].float()
+        if tokens.shape[1] == self.mfa.mu.shape[1]:
+            replaced = self.mfa.replace(tokens, self.alpha_interp)
+            h[0, start:, :] = replaced.to(dtype)
+        return (h,) + output[1:] if isinstance(output, tuple) else h
+
+
+def generate_tccd(model, processor, prompt, image, device,
+                    text_mfa, lm_layers, alpha_interp, alpha_cd,
+                    max_new_tokens):
+    """
+    Generation under centroid erasure (NOT step-wise contrastive decoding).
+
+    Rationale: transformers 5.4.0 has a Qwen2.5-VL bug in get_rope_index
+    (modeling_qwen2_5_vl.py:1098) where attention_mask expansion is
+    off-by-one vs input_token_type for certain image sizes. This breaks raw
+    model(**inputs) calls and generate() with output_scores=True. Standard
+    model.generate() without output_scores works correctly.
+
+    To stay within the working code path, we run a SECOND generate() with
+    a L12 centroid-erasure hook registered throughout, and compare CHAIR on
+    the two captions. This is a weaker test than step-wise CD — it measures
+    "does L12 centroid erasure change caption object mentions?" rather than
+    "does step-wise CD reduce hallucination?" — but it is a valid probe of
+    whether the TCCD mechanism meaningfully affects generative outputs.
+
+    NOTE: alpha_cd is unused in this fallback path (no logit combine).
+    The single hyperparameter is alpha_interp (how strongly to erase).
+    """
+    inputs, _ = prepare_inputs(MODEL_NAME, processor, prompt, [image], device)
+    pad_id = processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id
+
+    # Register erasure hook at L12 and generate
+    hook = GenerationTimeErasureHook(text_mfa, alpha_interp=alpha_interp)
+    handle = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+    try:
+        with torch.no_grad():
+            out = model.generate(
+                **inputs, max_new_tokens=max_new_tokens,
+                do_sample=False, pad_token_id=pad_id,
+            )
+    finally:
+        handle.remove()
+
+    in_len = inputs["input_ids"].shape[1]
+    new_tokens = out[0, in_len:].tolist()
+    text = processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
+    return text, new_tokens
+
+
+def load_phase2_centroids(repo_root):
+    """Load Qwen2.5-VL-7B L12 text centroids from Phase 2 cache."""
+    path = repo_root / PHASE2_CENTROID_PATH
+    assert path.exists(), f"Phase 2 centroids not found at {path}"
+    data = np.load(path)
+    centroids = data["text_centroids"]
+    print(f"  Loaded Phase 2 L12 text centroids: {centroids.shape}")
+    return KMeansCentroids(centroids)
+
+
+def stream_coco_val(n_images, seed=1337):
+    """Stream N COCO val images with ground-truth object categories."""
+    from datasets import load_dataset
+    ds = load_dataset("detection-datasets/coco", split="val", streaming=True)
+    ds = ds.shuffle(seed=seed, buffer_size=1000)
+    out = []
+    for item in ds:
+        if len(out) >= n_images:
+            break
+        img = item.get("image")
+        if img is None:
+            continue
+        # Get GT category names from ClassLabel IDs
+        cat_ids = item["objects"].get("category", [])
+        gt_objects = set()
+        for cid in cat_ids:
+            if 0 <= cid < len(COCO_CATEGORIES):
+                gt_objects.add(COCO_CATEGORIES[cid])
+        out.append({
+            "image_id": item.get("image_id"),
+            "image": img.convert("RGB"),
+            "gt_objects": sorted(gt_objects),
+        })
+    return out
+
+
+def aggregate_chair(per_image_results, key_prefix):
+    """Aggregate per-image CHAIR metrics into dataset-level summary.
+    key_prefix: 'baseline' or 'tccd'."""
+    chair_is = [r[f"{key_prefix}_chair_i"] for r in per_image_results
+                if f"{key_prefix}_chair_i" in r]
+    recalls = [r[f"{key_prefix}_recall"] for r in per_image_results
+               if f"{key_prefix}_recall" in r]
+    has_halls = [r[f"{key_prefix}_has_hallucination"] for r in per_image_results
+                  if f"{key_prefix}_has_hallucination" in r]
+    n_mentions = [len(r[f"{key_prefix}_mentioned"]) for r in per_image_results
+                   if f"{key_prefix}_mentioned" in r]
+    return {
+        "n": len(chair_is),
+        "chair_i_mean": float(np.mean(chair_is)) if chair_is else 0.0,
+        "chair_s": float(np.mean(has_halls)) if has_halls else 0.0,
+        "recall_mean": float(np.mean(recalls)) if recalls else 0.0,
+        "avg_objects_mentioned": float(np.mean(n_mentions)) if n_mentions else 0.0,
+    }
+
+
+def run(samples, model, processor, device, text_mfa, lm_layers,
+         alpha_interp, alpha_cd, max_new_tokens, prompt, out_path):
+    """Main eval loop. Resume-safe: appends to out_path per image."""
+    # Resume: load existing results
+    per_image = []
+    done_ids = set()
+    if out_path.exists():
+        try:
+            with open(out_path) as f:
+                existing = json.load(f)
+            per_image = existing.get("per_image", [])
+            done_ids = {r.get("image_id") for r in per_image}
+            print(f"  Resuming: {len(per_image)} images already done")
+        except Exception:
+            per_image = []
+
+    t_start = time.time()
+    for i, sample in enumerate(samples):
+        iid = sample["image_id"]
+        if iid in done_ids:
+            continue
+
+        t0 = time.time()
+        # Baseline
+        try:
+            bl_text, bl_tokens = generate_baseline(
+                model, processor, prompt, sample["image"], device, max_new_tokens
+            )
+        except Exception as e:
+            print(f"    [{i+1}/{len(samples)}] img {iid} baseline FAILED: {e}")
+            continue
+
+        # TCCD
+        try:
+            tccd_text, tccd_tokens = generate_tccd(
+                model, processor, prompt, sample["image"], device,
+                text_mfa, lm_layers, alpha_interp, alpha_cd, max_new_tokens,
+            )
+        except Exception as e:
+            print(f"    [{i+1}/{len(samples)}] img {iid} TCCD FAILED: {e}")
+            continue
+
+        gt = set(sample["gt_objects"])
+        bl_mentioned = find_objects_in_caption(bl_text)
+        tccd_mentioned = find_objects_in_caption(tccd_text)
+        bl_m = chair_metrics(bl_mentioned, gt)
+        tc_m = chair_metrics(tccd_mentioned, gt)
+
+        per_image.append({
+            "image_id": iid,
+            "gt_objects": sorted(gt),
+            "baseline_caption": bl_text,
+            "baseline_mentioned": bl_m["mentioned"],
+            "baseline_hallucinated": bl_m["hallucinated"],
+            "baseline_chair_i": bl_m["chair_i"],
+            "baseline_recall": bl_m["recall"],
+            "baseline_has_hallucination": bl_m["has_hallucination"],
+            "tccd_caption": tccd_text,
+            "tccd_mentioned": tc_m["mentioned"],
+            "tccd_hallucinated": tc_m["hallucinated"],
+            "tccd_chair_i": tc_m["chair_i"],
+            "tccd_recall": tc_m["recall"],
+            "tccd_has_hallucination": tc_m["has_hallucination"],
+        })
+
+        # Incremental save every 10 images
+        if (i + 1) % 10 == 0 or i == len(samples) - 1:
+            with open(out_path, "w") as f:
+                json.dump({"per_image": per_image, "partial": True}, f,
+                          indent=2, default=numpy_safe)
+
+        elapsed = time.time() - t0
+        avg = (time.time() - t_start) / max(1, i + 1 - len(done_ids))
+        remaining = avg * (len(samples) - i - 1)
+        n_done = len(done_ids) + (i + 1 - len(done_ids))
+        if (i + 1) % 10 == 0 or i < 3:
+            print(f"    [{i+1}/{len(samples)}] img {iid} "
+                  f"bl_CHAIRi={bl_m['chair_i']:.2f} "
+                  f"tccd_CHAIRi={tc_m['chair_i']:.2f} "
+                  f"Δ={tc_m['chair_i']-bl_m['chair_i']:+.2f} "
+                  f"[{elapsed:.0f}s, ETA {remaining/60:.0f} min]", flush=True)
+
+    # Final aggregate
+    results = {
+        "per_image": per_image,
+        "summary": {
+            "baseline": aggregate_chair(per_image, "baseline"),
+            "tccd": aggregate_chair(per_image, "tccd"),
+        },
+        "partial": False,
+    }
+    bl_sum = results["summary"]["baseline"]
+    tc_sum = results["summary"]["tccd"]
+    results["summary"]["delta_chair_i"] = tc_sum["chair_i_mean"] - bl_sum["chair_i_mean"]
+    results["summary"]["delta_chair_s"] = tc_sum["chair_s"] - bl_sum["chair_s"]
+    results["summary"]["delta_recall"] = tc_sum["recall_mean"] - bl_sum["recall_mean"]
+
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2, default=numpy_safe)
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_images", type=int, default=DEFAULT_N_IMAGES)
+    parser.add_argument("--alpha_interp", type=float, default=DEFAULT_ALPHA_INTERP)
+    parser.add_argument("--alpha_cd", type=float, default=DEFAULT_ALPHA_CD)
+    parser.add_argument("--max_new_tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
+    parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT)
+    parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--resume_from", type=str, default=None)
+    parser.add_argument("--sanity", action="store_true",
+                        help="Quick (~1-2 min): 5 images, max_new_tokens=25, α=0.4. "
+                             "Verifies end-to-end pipeline + CHAIR metric. "
+                             "Success = both captions produced; Δ CHAIR reported.")
+    args = parser.parse_args()
+
+    if args.sanity:
+        args.n_images = 5
+        args.max_new_tokens = 25
+        print("[SANITY MODE] 5 COCO val images, max 25 tokens, α_interp=0.4.\n"
+              "              Verifies end-to-end generation + CHAIR computation.\n"
+              "              Success = both captions produced for all 5; Δ CHAIR reported.\n")
+
+    repo_root = Path(__file__).resolve().parent.parent
+    if args.resume_from:
+        out_dir = Path(args.resume_from)
+    elif args.output_dir:
+        out_dir = Path(args.output_dir)
+    else:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = "chair_sanity" if args.sanity else "chair_qwen7b"
+        out_dir = repo_root / "results" / f"{stem}_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Output:         {out_dir}")
+    print(f"Model:          {MODEL_NAME}")
+    print(f"N images:       {args.n_images}")
+    print(f"α_interp:       {args.alpha_interp}")
+    print(f"α_cd:           {args.alpha_cd}")
+    print(f"max_new_tokens: {args.max_new_tokens}")
+    print(f"prompt:         '{args.prompt}'")
+
+    with open(out_dir / "config.json", "w") as f:
+        json.dump({
+            "timestamp": datetime.now().isoformat(),
+            "model": MODEL_NAME, "n_images": args.n_images,
+            "alpha_interp": args.alpha_interp, "alpha_cd": args.alpha_cd,
+            "max_new_tokens": args.max_new_tokens, "prompt": args.prompt,
+            "sanity": args.sanity,
+        }, f, indent=2)
+
+    print(f"\nLoading Phase 2 centroids...")
+    text_mfa = load_phase2_centroids(repo_root)
+
+    print(f"\nLoading {MODEL_NAME}...")
+    cfg = get_config(MODEL_NAME)
+    model, processor, _ = load_model(MODEL_NAME)
+    device = next(model.parameters()).device
+    lm_layers = find_lm_layers(model, cfg)
+
+    print(f"\nStreaming {args.n_images} COCO val images...")
+    samples = stream_coco_val(args.n_images)
+    print(f"  Loaded {len(samples)} images")
+
+    out_path = out_dir / "chair_results.json"
+    print(f"\nRunning CHAIR evaluation...")
+    results = run(
+        samples, model, processor, device, text_mfa, lm_layers,
+        alpha_interp=args.alpha_interp, alpha_cd=args.alpha_cd,
+        max_new_tokens=args.max_new_tokens, prompt=args.prompt,
+        out_path=out_path,
+    )
+
+    # Verdict
+    bl = results["summary"]["baseline"]
+    tc = results["summary"]["tccd"]
+    print(f"\n{'='*60}\nCHAIR SUMMARY\n{'='*60}")
+    print(f"  {'Metric':20s}  {'Baseline':>10s}  {'TCCD':>10s}  {'Δ':>10s}")
+    print(f"  {'CHAIRi (↓ better)':20s}  {bl['chair_i_mean']:>10.4f}  "
+          f"{tc['chair_i_mean']:>10.4f}  {tc['chair_i_mean']-bl['chair_i_mean']:>+10.4f}")
+    print(f"  {'CHAIRs (↓ better)':20s}  {bl['chair_s']:>10.4f}  "
+          f"{tc['chair_s']:>10.4f}  {tc['chair_s']-bl['chair_s']:>+10.4f}")
+    print(f"  {'Recall (↑ better)':20s}  {bl['recall_mean']:>10.4f}  "
+          f"{tc['recall_mean']:>10.4f}  {tc['recall_mean']-bl['recall_mean']:>+10.4f}")
+    print(f"  {'Avg objs mentioned':20s}  {bl['avg_objects_mentioned']:>10.2f}  "
+          f"{tc['avg_objects_mentioned']:>10.2f}  "
+          f"{tc['avg_objects_mentioned']-bl['avg_objects_mentioned']:>+10.2f}")
+
+    # Interpretation
+    if args.sanity:
+        n = tc["n"]
+        print(f"\n  Sanity: {n}/5 images produced captions under both conditions.")
+        if n >= 4:
+            print(f"  → Protocol OK. Safe to launch full run.")
+        else:
+            print(f"  → Pipeline failure. Investigate.")
+    else:
+        dci = tc["chair_i_mean"] - bl["chair_i_mean"]
+        print(f"\n  NOTE: This run measures baseline vs L12-centroid-erased captions,")
+        print(f"  NOT step-wise contrastive decoding (blocked by transformers 5.4.0 bug).")
+        if dci < -0.01:
+            print(f"  → L12 erasure REDUCES hallucination by {-dci*100:.1f}pp CHAIRi.")
+        elif dci > 0.01:
+            print(f"  → L12 erasure INCREASES hallucination by {dci*100:.1f}pp CHAIRi.")
+        else:
+            print(f"  → L12 erasure effectively neutral on CHAIRi (|Δ| < 1pp).")
+
+    print(f"\nAll done. Outputs: {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

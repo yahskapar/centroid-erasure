@@ -1,0 +1,28 @@
+{
+  "accuracy": {
+    "baseline": 0.8290816326530612,
+    "lcd": 0.8409863945578231,
+    "oracle_union": 0.8639455782312925,
+    "tccd": 0.8384353741496599
+  },
+  "correct": {
+    "baseline": 975,
+    "lcd": 989,
+    "oracle_union": 1016,
+    "tccd": 986
+  },
+  "exclusive_correct": {
+    "lcd_only": 30,
+    "tccd_only": 27
+  },
+  "flip_indicator_correlations": {
+    "tccd_dola": 0.61,
+    "tccd_lcd": 0.46,
+    "tccd_vcd": 0.41
+  },
+  "n": 1176,
+  "omission_reason": "benchmark answer and prediction letters are not redistributed; only correctness aggregates are released",
+  "paired_predictions_released": false,
+  "protocol": "one canonical row per MMBench base identifier",
+  "status": "retained_corrected"
+}

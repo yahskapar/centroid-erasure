@@ -1,0 +1,109 @@
+{
+  "mean_vis_over_tccd_best_ratio": 0.673,
+  "models": {
+    "internvl": {
+      "per_task": {
+        "Art_Style": {
+          "tccd_best_delta": 0.0342,
+          "vis_ccd_best_delta": 0.0171
+        },
+        "Counting": {
+          "tccd_best_delta": 0.0,
+          "vis_ccd_best_delta": -0.0167
+        },
+        "Forensic_Detection": {
+          "tccd_best_delta": 0.0303,
+          "vis_ccd_best_delta": 0.0303
+        },
+        "Relative_Depth": {
+          "tccd_best_delta": 0.0887,
+          "vis_ccd_best_delta": -0.0081
+        },
+        "Spatial_Relation": {
+          "tccd_best_delta": 0.021,
+          "vis_ccd_best_delta": 0.0
+        },
+        "Visual_Similarity": {
+          "tccd_best_delta": 0.0148,
+          "vis_ccd_best_delta": 0.0222
+        }
+      },
+      "ratio_vis_over_tccd_best": 0.238,
+      "tccd_best_delta": 0.0315,
+      "tccd_primary_alpha04": -0.0099,
+      "vis_ccd_best_delta": 0.0075,
+      "vis_ccd_primary_alpha04": -0.0122
+    },
+    "llava_ov": {
+      "per_task": {
+        "Art_Style": {
+          "tccd_best_delta": 0.0,
+          "vis_ccd_best_delta": 0.0171
+        },
+        "Counting": {
+          "tccd_best_delta": 0.0167,
+          "vis_ccd_best_delta": -0.0083
+        },
+        "Forensic_Detection": {
+          "tccd_best_delta": 0.0985,
+          "vis_ccd_best_delta": 0.1136
+        },
+        "Relative_Depth": {
+          "tccd_best_delta": 0.0403,
+          "vis_ccd_best_delta": 0.0403
+        },
+        "Spatial_Relation": {
+          "tccd_best_delta": 0.014,
+          "vis_ccd_best_delta": 0.035
+        },
+        "Visual_Similarity": {
+          "tccd_best_delta": 0.1111,
+          "vis_ccd_best_delta": 0.0148
+        }
+      },
+      "ratio_vis_over_tccd_best": 0.756,
+      "tccd_best_delta": 0.0468,
+      "tccd_primary_alpha04": 0.02,
+      "vis_ccd_best_delta": 0.0354,
+      "vis_ccd_primary_alpha04": 0.0224
+    },
+    "qwen": {
+      "per_task": {
+        "Art_Style": {
+          "tccd_best_delta": 0.0684,
+          "vis_ccd_best_delta": 0.0513
+        },
+        "Counting": {
+          "tccd_best_delta": 0.025,
+          "vis_ccd_best_delta": -0.0083
+        },
+        "Forensic_Detection": {
+          "tccd_best_delta": 0.1136,
+          "vis_ccd_best_delta": 0.1439
+        },
+        "Relative_Depth": {
+          "tccd_best_delta": 0.0161,
+          "vis_ccd_best_delta": 0.0161
+        },
+        "Spatial_Relation": {
+          "tccd_best_delta": 0.0,
+          "vis_ccd_best_delta": 0.021
+        },
+        "Visual_Similarity": {
+          "tccd_best_delta": 0.1037,
+          "vis_ccd_best_delta": 0.1111
+        }
+      },
+      "ratio_vis_over_tccd_best": 1.026,
+      "tccd_best_delta": 0.0545,
+      "tccd_primary_alpha04": 0.0327,
+      "vis_ccd_best_delta": 0.0559,
+      "vis_ccd_primary_alpha04": 0.0416
+    }
+  },
+  "predictions": {
+    "aggregate_vis_ccd_smaller_than_tccd": false,
+    "per_task_pattern_differs": null
+  },
+  "verdict": "MODERATE_DIRECTIONAL"
+}

@@ -1,0 +1,23 @@
+{
+  "anls": {
+    "bl": 0.9451985269632327,
+    "text_erased": 0.0,
+    "vis_erased": 0.06384141122035858
+  },
+  "config": {
+    "headline_metric": "containment (recall); ANLS conflates both erasure failure modes to 0",
+    "max_new_tokens": 64,
+    "model": "qwen",
+    "n": 300,
+    "text_layer": 12,
+    "vis_layer": 16
+  },
+  "containment": {
+    "asymmetry_ratio": 0.7955390334572491,
+    "bl": 0.94,
+    "text_cost": 0.7133333333333333,
+    "text_erased": 0.22666666666666666,
+    "vis_cost": 0.8966666666666666,
+    "vis_erased": 0.043333333333333335
+  }
+}

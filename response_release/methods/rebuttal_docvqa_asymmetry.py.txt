@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse, json, sys, time, warnings
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs  # noqa
+from centroid_erasure.visual_tokens import find_visual_token_range  # noqa
+from pipeline.paper_sweep import KMeansCentroids, TextCDHook  # noqa
+# reuse v2 helpers (loader, ANLS scorer, output cleaner, constants)
+from protocol_snapshot.rebuttal_docvqa_v2 import (  # noqa
+    anls, load_docvqa, clean_output, MAX_NEW_TOKENS,
+)
+
+MODEL_KEY = "qwen"
+TEXT_LAYER = 12
+VIS_LAYER = 16
+PHASE2_CENTROID = REPO_ROOT / "results" / "cross_model_v2_20260407_144343" / "qwen_centroids.npz"
+
+
+def contains(pred, golds):
+    """Recall metric: 1.0 if any (normalized) gold answer is a substring of the
+    (normalized) prediction, else 0.0. Unlike ANLS, this SEPARATES the two
+    erasure failure modes ANLS conflates to 0: text-erase rambles but keeps the
+    answer content (-> contains -> 1), vis-erase emits short hallucinated wrong
+    answers (-> does not contain -> 0). So the text/vis asymmetry is visible
+    under containment even though both score ~0 ANLS."""
+    import re
+
+    def norm(s):
+        s = str(s).lower().strip()
+        s = re.sub(r"[^\w\s]", " ", s)
+        return " ".join(s.split())
+
+    p = norm(pred)
+    if not p:
+        return 0.0
+    for g in golds:
+        gn = norm(g)
+        if gn and gn in p:
+            return 1.0
+    return 0.0
+
+
+def generate(model, processor, inputs, mode, lm_layers, text_mfa, vis_mfa):
+    """mode in {baseline, text, vis}. Returns decoded answer string.
+
+    For text/vis modes, the erasure hook fires ONLY on prefill (seq_len>1)."""
+    device = next(model.parameters()).device
+    base_len = inputs["input_ids"].shape[1]
+    handle = None
+    try:
+        if mode == "text":
+            tcd = TextCDHook(text_mfa, MODEL_KEY, processor, alpha_interp=0.0, segment="all")
+            tcd.set_input(inputs["input_ids"])
+
+            def text_hook(module, inp, output):
+                h = output[0] if isinstance(output, tuple) else output
+                if h.shape[1] <= 1:          # decode step → no prompt tokens to erase
+                    return output
+                return tcd(module, inp, output)   # prefill → reuse paper's text erasure
+            handle = lm_layers[TEXT_LAYER].register_forward_hook(text_hook)
+
+        elif mode == "vis":
+            ids = inputs["input_ids"]
+
+            def vis_hook(module, inp, output):
+                h = output[0] if isinstance(output, tuple) else output
+                if h.shape[1] <= 1:
+                    return output
+                h = h.clone(); dtype, dev = h.dtype, h.device; sl = h.shape[1]
+                try:
+                    vs, ve = find_visual_token_range(MODEL_KEY, ids, h, processor)
+                except Exception:
+                    vs, ve = 10, max(int(sl * 0.7), sl - 100)
+                if ve > vs and ve - vs >= 2:
+                    vis_mfa.to_device(dev)
+                    tokens = h[0, vs:ve, :].float()
+                    if tokens.shape[1] == vis_mfa.mu.shape[1]:
+                        h[0, vs:ve, :] = vis_mfa.replace(tokens, 0.0).to(dtype)
+                return (h,) + output[1:] if isinstance(output, tuple) else h
+            handle = lm_layers[VIS_LAYER].register_forward_hook(vis_hook)
+
+        with torch.no_grad():
+            gen = model.generate(
+                **inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=False,
+                pad_token_id=processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id,
+            )
+    finally:
+        if handle is not None:
+            handle.remove()
+    new_tokens = gen[0, base_len:].tolist()
+    return clean_output(processor.tokenizer.decode(new_tokens, skip_special_tokens=True))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true")
+    ap.add_argument("--cap", type=int, default=300)
+    ap.add_argument("--dry", action="store_true",
+                    help="no GPU/dataset: verify centroids load (text+vis, correct dim) and wiring")
+    args = ap.parse_args()
+
+    if args.dry:
+        z = np.load(PHASE2_CENTROID)
+        assert "text_centroids" in z and "vis_centroids" in z, "missing centroid keys"
+        tm = KMeansCentroids(z["text_centroids"]); vm = KMeansCentroids(z["vis_centroids"])
+        print(f"DRY OK: text_centroids {z['text_centroids'].shape}, vis_centroids {z['vis_centroids'].shape}")
+        print(f"  KMeansCentroids built: text mu {tm.mu.shape}, vis mu {vm.mu.shape}")
+        print(f"  hooks: text@L{TEXT_LAYER}, vis@L{VIS_LAYER}; find_visual_token_range imported OK")
+        print("  Re-run without --dry (GPU env) to measure DocVQA asymmetry.")
+        return
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_docvqa_asymmetry_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_file = open(out_dir / "log.txt", "a", buffering=1)
+    def log(m):
+        print(m); log_file.write(m + "\n")
+
+    log(f"=== rebuttal_docvqa_asymmetry ({ts}) ===  L_text={TEXT_LAYER} L_vis={VIS_LAYER} MAX_NEW={MAX_NEW_TOKENS}")
+    cfg = get_config(MODEL_KEY)
+    model, processor, _ = load_model(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    z = np.load(PHASE2_CENTROID)
+    text_mfa = KMeansCentroids(z["text_centroids"])
+    vis_mfa = KMeansCentroids(z["vis_centroids"])
+    log(f"Loaded {MODEL_KEY} + centroids (text {z['text_centroids'].shape}, vis {z['vis_centroids'].shape})")
+    device = next(model.parameters()).device
+
+    cap = 8 if args.sanity else args.cap
+    samples = load_docvqa(cap=cap, log=log)
+    if not samples:
+        sys.exit(1)
+
+    per_sample = []
+    sums = {"bl_anls": 0.0, "text_anls": 0.0, "vis_anls": 0.0,
+            "bl_con": 0.0, "text_con": 0.0, "vis_con": 0.0}
+    t0 = time.time()
+    for s_idx, sample in enumerate(samples):
+        golds = sample["answers"]
+        try:
+            inputs, _ = prepare_inputs(MODEL_KEY, processor, sample["prompt"], sample["images"], device)
+            a_bl = generate(model, processor, inputs, "baseline", lm_layers, text_mfa, vis_mfa)
+            a_text = generate(model, processor, inputs, "text", lm_layers, text_mfa, vis_mfa)
+            a_vis = generate(model, processor, inputs, "vis", lm_layers, text_mfa, vis_mfa)
+        except Exception as e:
+            log(f"  ⚠ {s_idx}: {e}")
+            continue
+        r = {"qid": sample["qid"], "q": sample["question"][:100], "gold": golds[:3],
+             "bl_anls": anls(a_bl, golds), "text_anls": anls(a_text, golds), "vis_anls": anls(a_vis, golds),
+             "bl_con": contains(a_bl, golds), "text_con": contains(a_text, golds), "vis_con": contains(a_vis, golds),
+             "ans_bl": a_bl[:80], "ans_text": a_text[:80], "ans_vis": a_vis[:80]}
+        for k in sums:
+            sums[k] += r[k]
+        per_sample.append(r)
+        if (s_idx + 1) % 25 == 0:
+            n = len(per_sample)
+            log(f"  [{n}/{cap}] CONTAINMENT bl={sums['bl_con']/n:.3f} text={sums['text_con']/n:.3f} "
+                f"vis={sums['vis_con']/n:.3f}  (ANLS bl={sums['bl_anls']/n:.3f}) ({(time.time()-t0)/60:.1f}m)")
+            torch.cuda.empty_cache()
+
+    n = max(1, len(per_sample))
+    # Headline asymmetry on CONTAINMENT (ANLS conflates both failure modes to 0).
+    blc, txtc, visc = sums["bl_con"]/n, sums["text_con"]/n, sums["vis_con"]/n
+    text_cost, vis_cost = blc - txtc, blc - visc
+    asym = (text_cost / vis_cost) if abs(vis_cost) > 1e-4 else float("inf")
+    bla, txta, visa = sums["bl_anls"]/n, sums["text_anls"]/n, sums["vis_anls"]/n  # ANLS (transparency)
+    with open(out_dir / "per_sample.jsonl", "w") as f:
+        for r in per_sample:
+            f.write(json.dumps(r) + "\n")
+    summary = {"config": {"model": MODEL_KEY, "text_layer": TEXT_LAYER, "vis_layer": VIS_LAYER,
+                          "max_new_tokens": MAX_NEW_TOKENS, "n": n,
+                          "headline_metric": "containment (recall); ANLS conflates both erasure failure modes to 0"},
+               "containment": {"bl": blc, "text_erased": txtc, "vis_erased": visc,
+                               "text_cost": text_cost, "vis_cost": vis_cost, "asymmetry_ratio": asym},
+               "anls": {"bl": bla, "text_erased": txta, "vis_erased": visa},
+               "wallclock_min": (time.time()-t0)/60}
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    with open(out_dir / "readout.txt", "w") as f:
+        f.write(f"DocVQA centroid-cost asymmetry (Qwen2.5-VL-7B, n={n})\n")
+        f.write("Headline metric = CONTAINMENT/recall (does output contain gold). ANLS shown for transparency;\n")
+        f.write("ANLS collapses both erasures to ~0 (text-erase loses answer FORMAT, vis-erase loses CONTENT),\n")
+        f.write("so the text/vis asymmetry is only visible under containment.\n\n")
+        f.write(f"  {'':14s}{'CONTAINMENT':>12s}{'ANLS':>10s}\n")
+        f.write(f"  {'baseline':14s}{blc:12.4f}{bla:10.4f}\n")
+        f.write(f"  {'text-erased':14s}{txtc:12.4f}{txta:10.4f}   text_cost(con) = {text_cost:+.4f}\n")
+        f.write(f"  {'vis-erased':14s}{visc:12.4f}{visa:10.4f}   vis_cost(con)  = {vis_cost:+.4f}\n")
+        f.write(f"\n  asymmetry (text_cost/vis_cost, containment) = {asym:.2f}x\n\n")
+        f.write("INTERPRETATION: vis_cost > text_cost (asym < 1) is the EXPECTED OCR result — on a\n")
+        f.write("document benchmark the image carries the answer, so erasing visual structure loses\n")
+        f.write("the content (hallucination) while erasing text structure only disrupts answer format\n")
+        f.write("(content preserved). Report as TASK-SPECIFICITY: the text-dominant asymmetry is specific\n")
+        f.write("to perception-competition tasks; on OCR where the image IS the answer, the dependence\n")
+        f.write("flips. (asym > 1 would instead extend the text-dominant asymmetry to DocVQA.)\n")
+    log(f"\nCONTAINMENT: bl={blc:.4f} text_erased={txtc:.4f} vis_erased={visc:.4f}")
+    log(f"  text_cost={text_cost:+.4f} vis_cost={vis_cost:+.4f} asymmetry={asym:.2f}x")
+    log(f"ANLS (transparency): bl={bla:.4f} text_erased={txta:.4f} vis_erased={visa:.4f}")
+    if bla < 0.30:
+        log("⚠ baseline ANLS < 0.30 — below published ~95%; check prompt/generation before trusting costs")
+    log("Done.")
+    log_file.close()
+
+
+if __name__ == "__main__":
+    main()

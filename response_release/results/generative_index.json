@@ -1,0 +1,17 @@
+{
+  "files": [
+    {
+      "path": "generative/captioning.json",
+      "sha256": "046f8e6bc9cf3bf3e5b875bc0bab7f6aef606bd1903717bbe6799c25c17969c4"
+    },
+    {
+      "path": "generative/docvqa.json",
+      "sha256": "507a861a2044be2f23a31220390b41e1ee1a6a5eeb18fb419a3c587c55d1be31"
+    },
+    {
+      "path": "generative/okvqa.json",
+      "sha256": "0e234f538595ae172fa9e213e7c09024b1a2a5068a95eb4caf2f0840ec45b6ff"
+    }
+  ],
+  "status": "retained_negative_or_diagnostic"
+}

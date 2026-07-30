@@ -7,7 +7,7 @@ generated answers.
 """
 
 import torch
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 
 def get_choice_token_ids(

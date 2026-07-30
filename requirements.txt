@@ -5,6 +5,7 @@
 # cause of a run that does not reproduce.
 
 torch==2.6.0
+torchvision==0.21.0
 transformers==5.4.0
 accelerate==1.13.0
 numpy==2.2.6
@@ -28,6 +29,3 @@ pandas==2.3.3
 # gemma3_27b, qwen_32b, qwen3_32b, llava). Not needed for the seven models with
 # shipped centroid banks, which all load in bf16.
 bitsandbytes==0.49.2
-
-# The reproduction script runs the CPU suite before launching GPU work.
-pytest==9.1.1

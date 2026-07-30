@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse, gc, json, sys, time, warnings
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+import torch
+from scipy.stats import binomtest
+
+warnings.filterwarnings("ignore")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs  # noqa
+from pipeline.paper_sweep import KMeansCentroids, TextCDHook  # noqa
+
+TEXT_LAYER = 12
+ALPHA_INTERP = 0.4
+ALPHA_CD = 1.0
+LETTERS = ["A", "B", "C", "D"]
+DEFAULT_MODELS = ["qwen_3b", "qwen3", "idefics3", "llava_ov"]
+CENTROID_DIR = REPO_ROOT / "results" / "cross_model_v2_20260407_144343"
+
+
+def centroid_path(model_key):
+    return CENTROID_DIR / f"{model_key}_centroids.npz"
+
+
+def load_mmbench(cap=None, log=print):
+    from datasets import load_dataset
+    log("  Loading lmms-lab/MMBench_EN dev...")
+    ds = load_dataset("lmms-lab/MMBench_EN", split="dev")
+    samples = []
+    for row in ds:
+        opts = []
+        for L in LETTERS:
+            v = row.get(L)
+            if v is not None and str(v).strip() and str(v).lower() != "nan":
+                opts.append((L, str(v).strip()))
+        if len(opts) < 2: continue
+        opt_str = "\n".join(f"({L}) {v}" for L, v in opts)
+        hint_v = row.get("hint")
+        hint = f"{hint_v}\n" if hint_v and str(hint_v).strip() and str(hint_v).lower() != "nan" else ""
+        prompt = f"{hint}{row['question']}\n\nSelect from the following choices.\n{opt_str}"
+        img = row.get("image")
+        if img is None: continue
+        img = img.convert("RGB") if hasattr(img, "convert") else img
+        ans = str(row.get("answer", "")).strip().upper()
+        if ans not in [L for L, _ in opts]: continue
+        samples.append({"prompt": prompt, "images": [img], "answer": ans})
+        if cap and len(samples) >= cap: break
+    log(f"  MMBench: {len(samples)} samples")
+    return samples
+
+
+def evaluate_model_mmbench(model_key, samples, log, sanity=False):
+    cp = centroid_path(model_key)
+    if not cp.exists():
+        log(f"  ⚠ no centroid: {cp}"); return None
+    cfg = get_config(model_key)
+    model, processor, _ = load_model(model_key)
+    lm_layers = find_lm_layers(model, cfg)
+    text_mfa = KMeansCentroids(np.load(cp)["text_centroids"])
+    device = next(model.parameters()).device
+    letter_ids = {L: processor.tokenizer.encode(f" {L}", add_special_tokens=False)[0]
+                  for L in LETTERS}
+
+    bl_c = cd_c = n = 0
+    b = c = 0
+    t0 = time.time()
+    for s_idx, sample in enumerate(samples):
+        try:
+            inputs, _ = prepare_inputs(model_key, processor, sample["prompt"], sample["images"], device)
+        except Exception:
+            continue
+        input_ids = inputs["input_ids"]
+        with torch.no_grad():
+            out_n = model(**inputs)
+        logits_n = out_n.logits[0, -1, :].float()
+        pred_bl = max(LETTERS, key=lambda L: logits_n[letter_ids[L]].item())
+
+        hook = TextCDHook(text_mfa, model_key, processor, alpha_interp=ALPHA_INTERP, segment="all")
+        hook.set_input(input_ids)
+        handle = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+        try:
+            with torch.no_grad():
+                out_e = model(**inputs)
+            logits_e = out_e.logits[0, -1, :].float()
+            logits_cd = logits_n + ALPHA_CD * (logits_n - logits_e)
+            pred_cd = max(LETTERS, key=lambda L: logits_cd[letter_ids[L]].item())
+        finally:
+            handle.remove()
+
+        bl_ok = (pred_bl == sample["answer"])
+        cd_ok = (pred_cd == sample["answer"])
+        n += 1; bl_c += int(bl_ok); cd_c += int(cd_ok)
+        if bl_ok and not cd_ok: b += 1
+        elif not bl_ok and cd_ok: c += 1
+        del out_n, out_e
+        if (s_idx + 1) % 100 == 0:
+            torch.cuda.empty_cache()
+            log(f"    [{s_idx+1}/{len(samples)}] bl={bl_c/n:.3f} cd={cd_c/n:.3f} "
+                f"Δ={(cd_c-bl_c)/n:+.4f} ({(time.time()-t0)/60:.1f} min)")
+
+    p = binomtest(min(b, c), b + c, p=0.5).pvalue if (b + c) > 0 else 1.0
+    result = {"n": n, "baseline_acc": bl_c / max(1, n), "cd_acc": cd_c / max(1, n),
+              "delta": (cd_c - bl_c) / max(1, n), "b": b, "c": c, "mcnemar_p": p,
+              "wallclock_min": (time.time() - t0) / 60}
+    del model, processor, lm_layers
+    gc.collect(); torch.cuda.empty_cache()
+    return result
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true")
+    ap.add_argument("--cap", type=int, default=1500)
+    ap.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
+    args = ap.parse_args()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_mmbench_cross_model_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "mmbench_cross_model_log.txt"
+    log_file = open(log_path, "a", buffering=1)
+    def log(m):
+        print(m); log_file.write(m + "\n")
+
+    log(f"=== rebuttal_mmbench_cross_model ({ts}) ===")
+    log(f"models={args.models}  cap={args.cap}")
+    cap = 8 if args.sanity else args.cap
+    samples = load_mmbench(cap=cap, log=log)
+    if not samples: sys.exit(1)
+
+    summary = {"config": {"alpha_interp": ALPHA_INTERP, "alpha_cd": ALPHA_CD},
+               "per_model": {}}
+    for mk in args.models:
+        log(f"\n── {mk} ──")
+        r = evaluate_model_mmbench(mk, samples, log, sanity=args.sanity)
+        if r is None: continue
+        summary["per_model"][mk] = r
+        log(f"  → {mk}: n={r['n']} bl={r['baseline_acc']:.4f} cd={r['cd_acc']:.4f} "
+            f"Δ={r['delta']:+.4f} p={r['mcnemar_p']:.4f} ({r['wallclock_min']:.1f} min)")
+        with open(out_dir / "mmbench_cross_model_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+
+    with open(out_dir / "mmbench_cross_model_readout.txt", "w") as f:
+        f.write(f"MMBench TCCD across models ({ts})  (fixed α=0.4)\n\n")
+        f.write(f"{'Model':<18s}{'n':>6s}{'Base':>10s}{'+CD':>10s}{'Δ':>10s}{'p':>10s}\n")
+        f.write("-" * 70 + "\n")
+        for mk, r in summary["per_model"].items():
+            f.write(f"{mk:<18s}{r['n']:6d}{r['baseline_acc']:10.4f}{r['cd_acc']:10.4f}"
+                    f"{r['delta']:+10.4f}{r['mcnemar_p']:10.4f}\n")
+    log("Done.")
+    log_file.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+#
+# NON-EXECUTABLE PROTOCOL SNAPSHOT.
+#
+# This sanitized snapshot records the distinct K=512 sensitivity harness used
+# for the retained 3x5 result. It is not the K=256 faiss paper pipeline and is
+# not a supported public runner. Private harness imports, machine-local paths,
+# checkpoint caches, intermediate activations, centroid banks, and table-copy
+# side effects are intentionally omitted. The released result contains only
+# aggregate task counts and accuracies.
+#
+# Exact retained invocation:
+#   --data_seeds 1337,42,2024
+#   --kmeans_seeds 42,800,1337,2024,8320
+#   --max_heldout 2000
+#   --alpha_cd 1.0
+#
+# Important provenance:
+#   K=512, scikit-learn MiniBatchKMeans, batch_size=4096, n_init=3
+#   fixed alpha_interp=0.4, alpha_cd=1.0, text layer 12
+#   generic harvest prompt: "Describe what you see in this image.\nAnswer:"
+#
+# The historical driver's default alpha_cd was not the retained setting.
+# Hard-coding 1.0 here prevents that default from being mistaken for the
+# camera-ready sensitivity protocol.
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+from sklearn.cluster import MiniBatchKMeans
+
+from protocol_snapshot import (
+    evaluate_six_blink_tasks_with_text_cd,
+    harvest_post_image_text_activations,
+    iter_shuffled_coco_images,
+)
+
+
+DATA_SEEDS = (1337, 42, 2024)
+KMEANS_SEEDS = (42, 800, 1337, 2024, 8320)
+TASKS = (
+    "Forensic_Detection",
+    "Visual_Similarity",
+    "Art_Style",
+    "Counting",
+    "Relative_Depth",
+    "Spatial_Relation",
+)
+MODEL = "Qwen2.5-VL-7B"
+MAX_IMAGES = 2000
+K = 512
+TEXT_LAYER = 12
+ALPHA_INTERP = 0.4
+ALPHA_CD = 1.0
+HARVEST_PROMPT = "Describe what you see in this image.\nAnswer:"
+
+
+@dataclass(frozen=True)
+class Cell:
+    data_seed: int
+    kmeans_seed: int
+
+    @property
+    def key(self) -> str:
+        return f"d{self.data_seed}_k{self.kmeans_seed}"
+
+
+def fit_centers(activations: np.ndarray, kmeans_seed: int) -> np.ndarray:
+    """Exact fitting backend and parameters used by this sensitivity harness."""
+    estimator = MiniBatchKMeans(
+        n_clusters=K,
+        random_state=kmeans_seed,
+        batch_size=4096,
+        n_init=3,
+    )
+    estimator.fit(activations)
+    return estimator.cluster_centers_
+
+
+def run_grid() -> dict[str, dict]:
+    """Protocol skeleton; protocol_snapshot helpers are documentary placeholders."""
+    cell_results = {}
+    for data_seed in DATA_SEEDS:
+        images = iter_shuffled_coco_images(
+            seed=data_seed,
+            shuffle_buffer=1000,
+            limit=MAX_IMAGES,
+        )
+        activations = harvest_post_image_text_activations(
+            model=MODEL,
+            images=images,
+            layer=TEXT_LAYER,
+            prompt=HARVEST_PROMPT,
+        )
+        for kmeans_seed in KMEANS_SEEDS:
+            cell = Cell(data_seed, kmeans_seed)
+            centers = fit_centers(activations, kmeans_seed)
+            cell_results[cell.key] = evaluate_six_blink_tasks_with_text_cd(
+                model=MODEL,
+                tasks=TASKS,
+                centers=centers,
+                text_layer=TEXT_LAYER,
+                alpha_interp=ALPHA_INTERP,
+                alpha_cd=ALPHA_CD,
+                decoding="greedy",
+                aggregate_only=True,
+            )
+    return cell_results
+
+
+def population_std(values: list[float]) -> float:
+    """The paper tables use population SD (NumPy's default ddof=0)."""
+    return float(np.std(np.asarray(values, dtype=float), ddof=0))
+
+
+def sensitivity_summary(
+    cell_results: dict[str, dict],
+) -> dict[str, dict[str, float]]:
+    """Reproduce the descriptive, non-factorial summaries used in the paper."""
+    output = {}
+    for task in TASKS:
+        matrix = np.asarray(
+            [
+                [
+                    cell_results[f"d{data_seed}_k{kmeans_seed}"][task][
+                        "cd_delta"
+                    ]
+                    for kmeans_seed in KMEANS_SEEDS
+                ]
+                for data_seed in DATA_SEEDS
+            ],
+            dtype=float,
+        )
+        output[task] = {
+            # SD across K-means seeds within each data seed, then mean.
+            "kmeans_init_std": float(
+                np.mean(np.std(matrix, axis=1, ddof=0))
+            ),
+            # SD across data seeds at each K-means seed, then mean.
+            "data_sampling_std": float(
+                np.mean(np.std(matrix, axis=0, ddof=0))
+            ),
+            # SD across all 15 cells.
+            "total_pipeline_std": population_std(matrix.ravel().tolist()),
+        }
+    return output
+
+
+# Deliberately no executable main block. Use the maintained public pipeline
+# for supported reruns, and response_release/scripts/recompute_variance.py to
+# verify the released aggregate evidence without datasets or model weights.

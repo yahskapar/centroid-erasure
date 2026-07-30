@@ -14,7 +14,9 @@ Minimal use, starting from a centroid bank shipped with this repo:
     )
 
     model, processor, _ = load_model("qwen")
-    bank = CentroidBank.load("centroids/qwen.npz", modality="text")
+    bank = CentroidBank.load(
+        "centroids/qwen.npz", modality="text", expected_model="qwen"
+    )
 
     inputs, _ = prepare_inputs("qwen", processor, prompt, [image], model.device)
     hook = CentroidReplacementHook(model, bank, "qwen", processor,

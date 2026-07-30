@@ -1,0 +1,291 @@
+{
+  "config": {
+    "alpha_cd": 1.0,
+    "dataset": "BLINK",
+    "dataset_revision": "a3666eb249237ba3d5eca8db21176cc47967e040",
+    "decoding": "greedy answer-letter scoring",
+    "mean": "unweighted mean of six per-task accuracy differences",
+    "model_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "model_revision": "cc594898137f460bfe9f0759e9844b3ce807cfb5",
+    "n_total": 771,
+    "split": "validation",
+    "tasks": [
+      "Forensic_Detection",
+      "Visual_Similarity",
+      "Art_Style",
+      "Counting",
+      "Relative_Depth",
+      "Spatial_Relation"
+    ]
+  },
+  "methods": {
+    "dola_high": {
+      "candidate_layers": [
+        16,
+        18,
+        20,
+        22,
+        24,
+        26
+      ],
+      "mean_delta": 0.03419179386921323,
+      "mean_delta_pp": 3.4191793869213227,
+      "method": "DoLa",
+      "reported_mean_delta": 0.0342,
+      "reported_mean_delta_pp": 3.42,
+      "per_task": {
+        "Art_Style": {
+          "baseline_accuracy": 0.5555555555555556,
+          "baseline_correct": 65,
+          "delta": 0.06837606837606838,
+          "discordance": {
+            "baseline_correct_method_wrong": 4,
+            "baseline_wrong_method_correct": 12
+          },
+          "method_accuracy": 0.6239316239316239,
+          "method_correct": 73,
+          "n": 117
+        },
+        "Counting": {
+          "baseline_accuracy": 0.6666666666666666,
+          "baseline_correct": 80,
+          "delta": 0.016666666666666666,
+          "discordance": {
+            "baseline_correct_method_wrong": 2,
+            "baseline_wrong_method_correct": 4
+          },
+          "method_accuracy": 0.6833333333333333,
+          "method_correct": 82,
+          "n": 120
+        },
+        "Forensic_Detection": {
+          "baseline_accuracy": 0.4772727272727273,
+          "baseline_correct": 63,
+          "delta": 0.06060606060606061,
+          "discordance": {
+            "baseline_correct_method_wrong": 7,
+            "baseline_wrong_method_correct": 15
+          },
+          "method_accuracy": 0.5378787878787878,
+          "method_correct": 71,
+          "n": 132
+        },
+        "Relative_Depth": {
+          "baseline_accuracy": 0.7903225806451613,
+          "baseline_correct": 98,
+          "delta": 0.008064516129032258,
+          "discordance": {
+            "baseline_correct_method_wrong": 5,
+            "baseline_wrong_method_correct": 6
+          },
+          "method_accuracy": 0.7983870967741935,
+          "method_correct": 99,
+          "n": 124
+        },
+        "Spatial_Relation": {
+          "baseline_accuracy": 0.8881118881118881,
+          "baseline_correct": 127,
+          "delta": 0.006993006993006993,
+          "discordance": {
+            "baseline_correct_method_wrong": 3,
+            "baseline_wrong_method_correct": 4
+          },
+          "method_accuracy": 0.8951048951048951,
+          "method_correct": 128,
+          "n": 143
+        },
+        "Visual_Similarity": {
+          "baseline_accuracy": 0.762962962962963,
+          "baseline_correct": 103,
+          "delta": 0.044444444444444446,
+          "discordance": {
+            "baseline_correct_method_wrong": 2,
+            "baseline_wrong_method_correct": 8
+          },
+          "method_accuracy": 0.8074074074074075,
+          "method_correct": 109,
+          "n": 135
+        }
+      },
+      "selection": "per-example candidate maximizing Jensen-Shannon divergence from final-layer logits"
+    },
+    "dola_low": {
+      "candidate_layers": [
+        0,
+        2,
+        4,
+        6,
+        8,
+        10,
+        12,
+        14
+      ],
+      "mean_delta": 0.016062332728999398,
+      "mean_delta_pp": 1.6062332728999396,
+      "method": "DoLa",
+      "reported_mean_delta": 0.0161,
+      "reported_mean_delta_pp": 1.61,
+      "per_task": {
+        "Art_Style": {
+          "baseline_accuracy": 0.5555555555555556,
+          "baseline_correct": 65,
+          "delta": 0.042735042735042736,
+          "discordance": {
+            "baseline_correct_method_wrong": 0,
+            "baseline_wrong_method_correct": 5
+          },
+          "method_accuracy": 0.5982905982905983,
+          "method_correct": 70,
+          "n": 117
+        },
+        "Counting": {
+          "baseline_accuracy": 0.6666666666666666,
+          "baseline_correct": 80,
+          "delta": 0.03333333333333333,
+          "discordance": {
+            "baseline_correct_method_wrong": 0,
+            "baseline_wrong_method_correct": 4
+          },
+          "method_accuracy": 0.7,
+          "method_correct": 84,
+          "n": 120
+        },
+        "Forensic_Detection": {
+          "baseline_accuracy": 0.4772727272727273,
+          "baseline_correct": 63,
+          "delta": -0.030303030303030304,
+          "discordance": {
+            "baseline_correct_method_wrong": 12,
+            "baseline_wrong_method_correct": 8
+          },
+          "method_accuracy": 0.44696969696969696,
+          "method_correct": 59,
+          "n": 132
+        },
+        "Relative_Depth": {
+          "baseline_accuracy": 0.7903225806451613,
+          "baseline_correct": 98,
+          "delta": 0.0,
+          "discordance": {
+            "baseline_correct_method_wrong": 0,
+            "baseline_wrong_method_correct": 0
+          },
+          "method_accuracy": 0.7903225806451613,
+          "method_correct": 98,
+          "n": 124
+        },
+        "Spatial_Relation": {
+          "baseline_accuracy": 0.8881118881118881,
+          "baseline_correct": 127,
+          "delta": 0.02097902097902098,
+          "discordance": {
+            "baseline_correct_method_wrong": 0,
+            "baseline_wrong_method_correct": 3
+          },
+          "method_accuracy": 0.9090909090909091,
+          "method_correct": 130,
+          "n": 143
+        },
+        "Visual_Similarity": {
+          "baseline_accuracy": 0.762962962962963,
+          "baseline_correct": 103,
+          "delta": 0.02962962962962963,
+          "discordance": {
+            "baseline_correct_method_wrong": 2,
+            "baseline_wrong_method_correct": 6
+          },
+          "method_accuracy": 0.7925925925925926,
+          "method_correct": 107,
+          "n": 135
+        }
+      },
+      "selection": "per-example candidate maximizing Jensen-Shannon divergence from final-layer logits"
+    },
+    "sdcd": {
+      "mean_delta": 0.008747246381654984,
+      "mean_delta_pp": 0.8747246381654983,
+      "method": "SDCD",
+      "patch_grid": 8,
+      "per_task": {
+        "Art_Style": {
+          "baseline_accuracy": 0.5555555555555556,
+          "baseline_correct": 65,
+          "delta": 0.03418803418803419,
+          "discordance": {
+            "baseline_correct_method_wrong": 7,
+            "baseline_wrong_method_correct": 11
+          },
+          "method_accuracy": 0.5897435897435898,
+          "method_correct": 69,
+          "n": 117
+        },
+        "Counting": {
+          "baseline_accuracy": 0.6666666666666666,
+          "baseline_correct": 80,
+          "delta": -0.03333333333333333,
+          "discordance": {
+            "baseline_correct_method_wrong": 5,
+            "baseline_wrong_method_correct": 1
+          },
+          "method_accuracy": 0.6333333333333333,
+          "method_correct": 76,
+          "n": 120
+        },
+        "Forensic_Detection": {
+          "baseline_accuracy": 0.4772727272727273,
+          "baseline_correct": 63,
+          "delta": 0.022727272727272728,
+          "discordance": {
+            "baseline_correct_method_wrong": 9,
+            "baseline_wrong_method_correct": 12
+          },
+          "method_accuracy": 0.5,
+          "method_correct": 66,
+          "n": 132
+        },
+        "Relative_Depth": {
+          "baseline_accuracy": 0.7903225806451613,
+          "baseline_correct": 98,
+          "delta": -0.024193548387096774,
+          "discordance": {
+            "baseline_correct_method_wrong": 5,
+            "baseline_wrong_method_correct": 2
+          },
+          "method_accuracy": 0.7661290322580645,
+          "method_correct": 95,
+          "n": 124
+        },
+        "Spatial_Relation": {
+          "baseline_accuracy": 0.8881118881118881,
+          "baseline_correct": 127,
+          "delta": -0.02097902097902098,
+          "discordance": {
+            "baseline_correct_method_wrong": 8,
+            "baseline_wrong_method_correct": 5
+          },
+          "method_accuracy": 0.8671328671328671,
+          "method_correct": 124,
+          "n": 143
+        },
+        "Visual_Similarity": {
+          "baseline_accuracy": 0.762962962962963,
+          "baseline_correct": 103,
+          "delta": 0.07407407407407407,
+          "discordance": {
+            "baseline_correct_method_wrong": 5,
+            "baseline_wrong_method_correct": 15
+          },
+          "method_accuracy": 0.837037037037037,
+          "method_correct": 113,
+          "n": 135
+        }
+      },
+      "reference": "deterministic per-example 8x8 patch shuffle",
+      "reported_mean_delta": 0.0088,
+      "reported_mean_delta_pp": 0.88
+    }
+  },
+  "note": "Reported means reproduce the four-decimal summaries in the historical run artifacts; exact count reconstruction is retained separately as mean_delta.",
+  "omission_reason": "benchmark prompts, answers, and item-level predictions are not redistributed",
+  "status": "retained_descriptive_fixed_setting"
+}

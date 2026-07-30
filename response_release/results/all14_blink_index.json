@@ -1,0 +1,15 @@
+{
+  "files": [
+    {
+      "model": "qwen",
+      "path": "all14_blink/qwen.json",
+      "sha256": "b42a70fe34c6d4afbe6b4df74e3cdda009f74843b7953583e2b88635081278d8"
+    },
+    {
+      "model": "qwen3",
+      "path": "all14_blink/qwen3.json",
+      "sha256": "d162863f5ca0230b1dd7cd075bba5c5bf7d0f9c02787d0bc9e09dfddf825ac3a"
+    }
+  ],
+  "status": "retained"
+}

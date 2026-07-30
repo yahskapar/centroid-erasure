@@ -1,0 +1,52 @@
+{
+  "config": {
+    "alpha_cd": 1.0,
+    "alpha_interp": 0.4,
+    "benchmarks": [
+      "mmmu",
+      "mmbench",
+      "mathvista"
+    ],
+    "circular": false,
+    "mmbench_cap": 1500,
+    "mmmu_cap": null,
+    "model": "qwen",
+    "sanity": false,
+    "text_layer": 12
+  },
+  "results": [
+    {
+      "baseline_acc": 0.42621015348288077,
+      "benchmark": "mmmu",
+      "cd_acc": 0.42384887839433294,
+      "delta": -0.0023612750885478317,
+      "mcnemar_b": 59,
+      "mcnemar_c": 57,
+      "mcnemar_p": 0.9260777633148564,
+      "n": 847,
+      "n_errors": 0
+    },
+    {
+      "baseline_acc": 0.826,
+      "benchmark": "mmbench",
+      "cd_acc": 0.842,
+      "delta": 0.016000000000000014,
+      "mcnemar_b": 20,
+      "mcnemar_c": 44,
+      "mcnemar_p": 0.0036899642765400487,
+      "n": 1500,
+      "n_errors": 0
+    },
+    {
+      "baseline_acc": 0.6166666666666667,
+      "benchmark": "mathvista",
+      "cd_acc": 0.6259259259259259,
+      "delta": 0.00925925925925919,
+      "mcnemar_b": 27,
+      "mcnemar_c": 32,
+      "mcnemar_p": 0.6029232012571504,
+      "n": 540,
+      "n_errors": 0
+    }
+  ]
+}

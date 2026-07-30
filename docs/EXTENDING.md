@@ -68,9 +68,7 @@ def _find_my_model(ids, seq_len, n_input):
     pos = np.where(ids == IMG_TOKEN)[0]
     if len(pos):
         return int(pos[0]), int(pos[-1]) + 1
-    if seq_len > n_input:         # vision tokens expanded past input_ids
-        return 5, 5 + (seq_len - n_input)
-    return 5, max(6, seq_len - 20)
+    raise ValueError("expected image placeholder is absent")
 ```
 
 and dispatch to it from `find_visual_token_range`.
@@ -80,25 +78,24 @@ Two patterns cover almost everything:
 * **Placeholder tokens.** The processor inserts a repeated image token, one
   per visual position. First and last occurrence give you the span directly.
   Qwen, Gemma3, Idefics3, InternVL all work this way.
-* **Post-hoc expansion.** `input_ids` contains a single `<image>` marker and
-  the vision encoder expands it during the forward pass, so the hidden state
-  is longer than `input_ids`. The difference in lengths is the visual token
-  count.
+* **Post-hoc expansion.** `input_ids` contains a single explicit `<image>`
+  marker and the vision encoder expands it during the forward pass, so the
+  hidden state is longer than `input_ids`. The marker locates the start; the
+  length difference determines the expanded visual-token count.
 
-### Three registry keys have no finder on purpose
+### Three registry keys have no validated finder
 
 `qwen2_vl`, `internvl3_8b` and `internvl35_8b` are loadable but have no
-visual-token finder, so they raise and the caller falls back to a positional
-heuristic. This is not an oversight: it is what the published run did, and the
-InternVL2.5/3/3.5 longitudinal series in the paper's appendix rests on it.
-Adding a finder for those keys is reasonable, but expect your numbers to differ
-from the published ones.
+visual-token finder, so they fail closed and cannot be presented as validated
+measurements. `--allow-visual-span-fallback` exposes the historical positional
+heuristic for debugging only. Adding a real finder is reasonable, but
+empirically validate its marker locations and document the resulting protocol.
 
-### Verify the span before trusting a run
+### Validate the span before trusting a run
 
-If span detection throws, the hook **silently** falls back to a positional
-heuristic (`vis_start=10`, `vis_end≈0.7*seq_len`). That will not crash, and it
-will quietly produce meaningless numbers. Check one sample first:
+If span detection throws, the hook refuses to run by default. This is
+intentional: a guessed visual span can produce plausible but meaningless
+numbers. Check one sample before a full run:
 
 ```python
 import torch
@@ -129,21 +126,24 @@ The measurement transferred to every model tested in the paper: text erasure
 cost exceeded visual erasure cost on 37 of 42 (model, task) cells, with four
 exact ties and one reversal.
 
-The **intervention** transferred much less. TCCD's recovery concentrates on
-BLINK and MMBench; across a wider grid it was significantly positive on only
-2 of 88 cells, which matches chance. If TCCD does not help your model on your
-benchmark, that is consistent with the paper rather than a sign of a broken
-setup. Check the measurement first: if the asymmetry is there, the pipeline is
-working.
+The **intervention** transferred much less. Positive fixed-dose recovery is
+largely confined to BLINK and, for Qwen2.5-VL-7B, MMBench. In the 10 x 8
+breadth grid, only 2 of 80 cells had nominal, unadjusted p < .05 gains, while
+24 of 80 had nominal, unadjusted p < .05 harms. If TCCD does not help your
+model on your benchmark, that is consistent with the paper rather than a sign
+of a broken setup. Check the measurement first: the expected asymmetry is a
+useful diagnostic, not by itself proof that the entire pipeline is correct.
 
 ## Things that will bite you
 
-* **Prompt-context mismatch.** Centroids must be harvested in the same prompt
-  format they are applied under. A different template gives a different, still
-  self-consistent, centroid set. We measured shifts up to ~4.5 pp per task from
-  this alone.
-* **K-means backend.** `faiss` and `sklearn` do not produce identical centers.
-  Compare like with like; the backend is recorded in `bank.meta["backend"]`.
+* **Harvest and fitting mismatch.** The released protocol fits on one fixed
+  generic prompt (16 post-image tokens/image, 32,000 total) and applies the
+  bank to varied downstream prompts. Preserve the harvest prompt, chat
+  template, image rendering, processor versions, K, and fitting backend when
+  refitting. A separate sensitivity grid kept the generic prompt but used
+  K=512 with `sklearn`, rather than the paper pipeline's K=256 with FAISS;
+  per-task deltas differed by up to ~4.5 pp. Compare like with like; the
+  backend is recorded in `bank.meta["backend"]`.
 * **`transformers` version.** The hook depends on decoder layers returning a
   tuple whose first element is the hidden state. Version drift here is the most
   common cause of a silent behaviour change. Pin it.

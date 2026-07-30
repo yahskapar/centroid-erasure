@@ -46,10 +46,11 @@ def mcnemar_test(
     intervention: np.ndarray,
 ) -> Dict[str, float]:
     """
-    McNemar's test for paired nominal data.
+    McNemar's asymptotic test for paired nominal data.
 
     Compares the number of samples "fixed" (wrong→right) vs "broken"
-    (right→wrong) by the intervention.
+    (right→wrong) by the intervention. This intentionally uses the
+    uncorrected chi-squared statistic, matching the paper pipeline.
 
     Args:
         baseline: (N,) binary array
@@ -68,7 +69,7 @@ def mcnemar_test(
     n_disc = fixed + broken
 
     if n_disc > 0:
-        chi2_stat = (abs(fixed - broken) - 1) ** 2 / n_disc
+        chi2_stat = (fixed - broken) ** 2 / n_disc
     else:
         chi2_stat = 0.0
 

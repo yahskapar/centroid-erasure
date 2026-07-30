@@ -1,0 +1,103 @@
+{
+  "benchmarks": {
+    "aokvqa": {
+      "asymmetry": 223.9999999999998,
+      "baseline": 0.907,
+      "cd_acc": 0.906,
+      "cd_delta": -0.0010000000000000009,
+      "cd_mcnemar_p": 1.0,
+      "cd_norm_gain": -0.010752688172043024,
+      "format": "mcqa",
+      "n": 1000,
+      "text_cost": 0.672,
+      "vis_cost": 0.0030000000000000027
+    },
+    "cvbench": {
+      "asymmetry": 44.111111111111065,
+      "baseline": 0.726,
+      "cd_acc": 0.686,
+      "cd_delta": -0.039999999999999925,
+      "cd_mcnemar_p": 4.5666107004454105e-07,
+      "cd_norm_gain": -0.14598540145985373,
+      "format": "mcqa",
+      "n": 1000,
+      "text_cost": 0.39699999999999996,
+      "vis_cost": 0.009000000000000008
+    },
+    "mme": {
+      "asymmetry": -25.500000000000217,
+      "baseline": 0.808,
+      "cd_acc": 0.818,
+      "cd_delta": 0.009999999999999898,
+      "cd_mcnemar_p": 0.29541328065567,
+      "cd_norm_gain": 0.052083333333332815,
+      "format": "binary",
+      "n": 1000,
+      "text_cost": 0.30600000000000005,
+      "vis_cost": -0.0119999999999999
+    },
+    "mmstar": {
+      "asymmetry": 15.090909090909078,
+      "baseline": 0.614,
+      "cd_acc": 0.614,
+      "cd_delta": 0.0,
+      "cd_mcnemar_p": 1.0,
+      "cd_norm_gain": 0.0,
+      "format": "mcqa",
+      "n": 1000,
+      "text_cost": 0.332,
+      "vis_cost": 0.02200000000000002
+    },
+    "mmvp": {
+      "asymmetry": null,
+      "baseline": 0.5,
+      "cd_acc": 0.5033333333333333,
+      "cd_delta": 0.0033333333333332993,
+      "cd_mcnemar_p": 1.0,
+      "cd_norm_gain": 0.006666666666666599,
+      "format": "mcqa",
+      "n": 300,
+      "text_cost": 0.0,
+      "vis_cost": 0.0
+    },
+    "realworldqa": {
+      "asymmetry": 69.50000000000041,
+      "baseline": 0.6628440366972477,
+      "cd_acc": 0.658256880733945,
+      "cd_delta": -0.004587155963302725,
+      "cd_mcnemar_p": 0.79052734375,
+      "cd_norm_gain": -0.013605442176870666,
+      "format": "mcqa",
+      "n": 436,
+      "text_cost": 0.31880733944954126,
+      "vis_cost": 0.004587155963302725
+    },
+    "scienceqa_img": {
+      "asymmetry": 53.4545454545454,
+      "baseline": 0.96,
+      "cd_acc": 0.962,
+      "cd_delta": 0.0020000000000000018,
+      "cd_mcnemar_p": 0.75390625,
+      "cd_norm_gain": 0.05,
+      "format": "mcqa",
+      "n": 1000,
+      "text_cost": 0.588,
+      "vis_cost": 0.01100000000000001
+    },
+    "seedbench": {
+      "asymmetry": 56.99999999999995,
+      "baseline": 0.788,
+      "cd_acc": 0.782,
+      "cd_delta": -0.006000000000000005,
+      "cd_mcnemar_p": 0.237884521484375,
+      "cd_norm_gain": -0.02830188679245286,
+      "format": "mcqa",
+      "n": 1000,
+      "text_cost": 0.513,
+      "vis_cost": 0.009000000000000008
+    }
+  },
+  "model": "llava_ov",
+  "text_layer": 12,
+  "vis_layer": 16
+}

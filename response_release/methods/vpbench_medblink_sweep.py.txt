@@ -1,0 +1,1318 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs
+from centroid_erasure.eval_mcqa import get_choice_token_ids
+from centroid_erasure.eval_binary import get_binary_token_ids
+from centroid_erasure.data.utils import parse_mc_answer
+from protocol_snapshot.latent_factor_cd import ALL_LETTERS
+
+# ── Protocol (matches cross_model_sweep_v2) ──
+ALPHA_CD = 1.0
+SWEEP_ALPHAS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+DATA_SEED = 1337
+KMEANS_SEED = 42
+MAX_IMAGES = 2000
+K = 256
+TEXT_LAYER = 12  # vis_layer computed per-model as 16 if n_layers > 16 else n_layers // 2
+
+GENERAL_MODELS = ["qwen", "qwen_3b", "qwen3", "qwen3_4b",
+                  "internvl", "llava_ov", "idefics3"]
+MEDICAL_MODELS = ["medgemma", "medgemma_27b"]  # MedVLM-R1 excluded (config bug)
+
+PHASE2_DIR = Path("results/cross_model_v2_20260407_144343")
+
+
+def numpy_safe(obj):
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    raise TypeError(f"Not serializable: {type(obj)}")
+
+
+def wilson_ci(n_correct, n_total, z=1.96):
+    if n_total == 0:
+        return 0.0, 0.0, 0.0
+    p = n_correct / n_total
+    denom = 1 + z**2 / n_total
+    center = (p + z**2 / (2 * n_total)) / denom
+    spread = z * np.sqrt(p * (1 - p) / n_total + z**2 / (4 * n_total**2)) / denom
+    return center, max(0, center - spread), min(1, center + spread)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Centroid + Hook classes
+# ═══════════════════════════════════════════════════════════════════
+
+class KMeansCentroids:
+    def __init__(self, centers):
+        self.mu = (torch.tensor(centers, dtype=torch.float32)
+                   if isinstance(centers, np.ndarray) else centers)
+        self._device = None
+
+    def to_device(self, device):
+        if self._device != device:
+            self.mu = self.mu.to(device)
+            self._device = device
+
+    def replace(self, x, alpha_interp=0.0):
+        self.to_device(x.device)
+        dists = torch.cdist(x.unsqueeze(0), self.mu.unsqueeze(0))[0]
+        k_idx = dists.argmin(dim=1)
+        mu_k = self.mu[k_idx]
+        return mu_k + alpha_interp * (x - mu_k)
+
+
+class TextCDHook:
+    """Text centroid replacement hook — matches cross_model_sweep_v2.TextCDHook.
+
+    Replaces post-visual-end tokens with centroid-interpolated versions at
+    interpolation factor alpha_interp. α=0 → full erasure; α=1 → identity.
+    """
+    def __init__(self, mfa, model_name, processor, alpha_interp=0.4):
+        self.mfa = mfa
+        self.model_name = model_name
+        self.processor = processor
+        self.alpha_interp = alpha_interp
+        self._input_ids = None
+
+    def set_input(self, input_ids):
+        self._input_ids = input_ids
+
+    def __call__(self, module, input, output):
+        from centroid_erasure.visual_tokens import find_visual_token_range
+        h = output[0] if isinstance(output, tuple) else output
+        h = h.clone()
+        dtype, device = h.dtype, h.device
+        seq_len = h.shape[1]
+
+        try:
+            _, vis_end = find_visual_token_range(
+                self.model_name, self._input_ids, h, self.processor)
+        except Exception:
+            vis_end = max(int(seq_len * 0.7), seq_len - 100)
+
+        start, end = vis_end, seq_len
+        if end <= start or end - start < 2:
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+
+        self.mfa.to_device(device)
+        tokens = h[0, start:end, :].float()
+        if tokens.shape[1] != self.mfa.mu.shape[1]:
+            return (h,) + output[1:] if isinstance(output, tuple) else h
+        replaced = self.mfa.replace(tokens, self.alpha_interp)
+        h[0, start:end, :] = replaced.to(dtype)
+        return (h,) + output[1:] if isinstance(output, tuple) else h
+
+
+# ═══════════════════════════════════════════════════════════════════
+# VPBench loader
+# ═══════════════════════════════════════════════════════════════════
+
+def _draw_markers_on_image(img, points_dict):
+    """Draw circle markers with labels on image.
+
+    EXACT port of VPBench's draw_markers() from benchmark_executor.py
+    (TonyLianLong/VPBench, lines 118-263). Defaults match the reference
+    DepthStyle / SemanticCorrespondenceStyle:
+      - marker_type=CIRCLE (hollow), color=(255,0,0) RGB → (0,0,255) BGR
+      - radius=5, thickness=2
+      - font=FONT_HERSHEY_SIMPLEX, font_scale=0.5, text_thickness=1
+      - text_offset=(0, -25), text_bg_color=(0,0,0), text_color=(255,255,255)
+      - text_y fallback: if text_y<0, text_y = y + radius + 5
+
+    Args:
+        img: PIL Image
+        points_dict: dict of {label: (x, y)} e.g. {"A": [404, 270], "B": [159, 293]}
+    Returns:
+        PIL Image (RGB) with markers drawn
+    """
+    import cv2
+    from PIL import Image
+
+    # Convert PIL RGB → cv2 BGR (matches VPBench's input handling, line 132-133)
+    image = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    img_draw = image.copy()
+
+    # VPBench default style (benchmark_executor.py:139-150)
+    color_rgb = (255, 0, 0)
+    text_bg_color_rgb = (0, 0, 0)
+    text_color_rgb = (255, 255, 255)
+    radius = 5
+    thickness = 2
+    font_scale = 0.5
+    text_offset = (0, -25)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_thickness = 1  # default (font_bold=False)
+
+    # RGB → BGR for OpenCV (line 176-178)
+    bgr_color = color_rgb[::-1]
+    bgr_text_bg_color = text_bg_color_rgb[::-1]
+    bgr_text_color = text_color_rgb[::-1]
+
+    for label_id, (x, y) in points_dict.items():
+        x, y = int(x), int(y)
+
+        # Hollow CIRCLE marker (line 185-186)
+        cv2.circle(img_draw, (x, y), radius, bgr_color, thickness)
+
+        # Label text (line 222-225: use label_id as string)
+        label = str(label_id)
+
+        # getTextSize (line 240)
+        text_size = cv2.getTextSize(label, font, font_scale, text_thickness)[0]
+
+        # Position (line 243-244)
+        text_x = x - text_size[0] // 2 + text_offset[0]
+        text_y = y + text_offset[1]
+
+        # Clipping fallback (line 247-248)
+        if text_y < 0:
+            text_y = y + radius + 5
+
+        # Black background rectangle with 2px padding (line 250-256)
+        padding = 2
+        cv2.rectangle(
+            img_draw,
+            (text_x - padding, text_y - padding),
+            (text_x + text_size[0], text_y + text_size[1] + padding),
+            bgr_text_bg_color,
+            -1,
+        )
+
+        # White label text — note cv2.putText's y is at the baseline,
+        # so VPBench uses text_y + text_size[1] (line 259-261)
+        cv2.putText(
+            img_draw, label, (text_x, text_y + text_size[1]),
+            font, font_scale, bgr_text_color, text_thickness,
+        )
+
+    # Convert BGR → RGB and return as PIL (matches VPBench's annotate_depth_image
+    # wrapper at line 272: Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
+    return Image.fromarray(cv2.cvtColor(img_draw, cv2.COLOR_BGR2RGB))
+
+
+def load_vpbench(max_samples=None):
+    """Load VPBench from HuggingFace JSON files + images.
+
+    Downloads raw source images once, then draws visual markers at runtime
+    using point_A/point_B coordinates (for depth) or keypoints (for semantic).
+    Returns dict of task_name → list of standardized samples with marked images.
+    """
+    import requests
+    from PIL import Image
+    from io import BytesIO
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    BASE_URL = "https://huggingface.co/datasets/longlian/VPBench/resolve/main"
+    CACHE_DIR = Path("artifacts/vpbench/images")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Depth subsets (single-image, 2-choice)
+    depth_subsets = [
+        ("DA-2K_data/depth/perceptioneval_depth_test.json", "DA-2K_data/depth/images"),
+        ("DA-2K_data/depth/perceptioneval_depth_dev.json", "DA-2K_data/depth/images"),
+        ("BLINK_depth_data/depth/perceptioneval_depth_test.json", "BLINK_depth_data/depth/images"),
+        ("BLINK_depth_data/depth/perceptioneval_depth_dev.json", "BLINK_depth_data/depth/images"),
+    ]
+    # Semantic correspondence subsets (paired images, 4-choice)
+    semantic_subsets = [
+        ("SPair-71k_data/semantic_correspondence/semantic_corr_raw_fixed.json",
+         "SPair-71k_data/semantic_correspondence/images"),
+        ("BLINK_semantic_data/semantic_correspondence/semantic_corr_raw_fixed.json",
+         "BLINK_semantic_data/semantic_correspondence/images"),
+    ]
+    subsets = {"VPBench_Depth": depth_subsets}
+
+    def download_image(img_url, cache_path):
+        """Download a single image if not cached."""
+        if cache_path.exists():
+            return True
+        try:
+            r = requests.get(img_url, timeout=15)
+            r.raise_for_status()
+            cache_path.write_bytes(r.content)
+            return True
+        except Exception:
+            return False
+
+    samples_by_task = {}
+    max_per_task = max_samples if max_samples else None
+
+    for task_name, json_paths in subsets.items():
+        # Phase 1: Collect all metadata and image URLs
+        all_items = []
+        for json_path, img_dir in json_paths:
+            url = f"{BASE_URL}/{json_path}"
+            try:
+                r = requests.get(url, timeout=30)
+                r.raise_for_status()
+                items = r.json()
+            except Exception as e:
+                print(f"    WARNING: Failed to load {json_path}: {e}")
+                continue
+
+            if not isinstance(items, list):
+                continue
+
+            for item in items:
+                if max_per_task and len(all_items) >= max_per_task:
+                    break
+                item["_img_dir"] = img_dir
+                all_items.append(item)
+
+        print(f"    {task_name}: {len(all_items)} metadata entries, downloading images...")
+
+        # Phase 2: Download all images in parallel (32 threads)
+        download_tasks = []
+        for item in all_items:
+            img_name = item.get("original_image", item.get("image", ""))
+            img_dir = item["_img_dir"]
+            # Use a flat cache keyed by dir+name to avoid collisions
+            safe_name = f"{img_dir.replace('/', '_')}_{img_name}"
+            cache_path = CACHE_DIR / safe_name
+            img_url = f"{BASE_URL}/{img_dir}/{img_name}"
+            item["_cache_path"] = cache_path
+            if not cache_path.exists():
+                download_tasks.append((img_url, cache_path))
+
+        if download_tasks:
+            n_to_download = len(download_tasks)
+            n_done = 0
+            with ThreadPoolExecutor(max_workers=32) as executor:
+                futures = {executor.submit(download_image, url, path): (url, path)
+                           for url, path in download_tasks}
+                for future in as_completed(futures):
+                    n_done += 1
+                    if n_done % 200 == 0:
+                        print(f"      Downloaded {n_done}/{n_to_download}...", flush=True)
+            print(f"      Downloaded {n_done}/{n_to_download} new images "
+                  f"({len(all_items) - n_to_download} cached)")
+        else:
+            print(f"      All {len(all_items)} images already cached")
+
+        # Phase 3: Build samples from cached images
+        task_samples = []
+        for item in all_items:
+            img_name = item.get("original_image", item.get("image", ""))
+            # Use the 'prompt' field which contains the full VPBench instruction
+            # including visual marker description ("Two points are circled...").
+            # Fall back to building from question+choices only if prompt missing.
+            full_prompt = item.get("prompt", "")
+            question = item.get("question", "")
+            choices = item.get("choices", [])
+            answers = item.get("answers", [])
+            answer_index = item.get("answer_index")
+            cache_path = item["_cache_path"]
+
+            if not (full_prompt or question) or not choices:
+                continue
+
+            # Build answer
+            if answers:
+                answer_text = answers[0]
+                try:
+                    idx = choices.index(answer_text)
+                    answer = chr(ord("A") + idx)
+                except ValueError:
+                    if answer_index is not None:
+                        answer = chr(ord("A") + answer_index)
+                    else:
+                        continue
+            elif answer_index is not None:
+                answer = chr(ord("A") + answer_index)
+            else:
+                continue
+
+            # Build prompt — prefer the VPBench `prompt` field (includes marker description)
+            n_choices = len(choices)
+            if full_prompt:
+                # Append "Answer:" if not already there
+                prompt = full_prompt.rstrip()
+                if not prompt.endswith(":"):
+                    prompt = prompt + "\nAnswer:"
+            else:
+                letters = list("ABCDEFGH")[:n_choices]
+                options_str = "\n".join(f"({l}) {c}" for l, c in zip(letters, choices))
+                prompt = f"{question}\n{options_str}\nAnswer:"
+
+            # Load image from cache and draw visual markers at point_A/point_B
+            point_a = item.get("point_A")
+            point_b = item.get("point_B")
+            if not point_a or not point_b:
+                continue
+
+            try:
+                image = Image.open(cache_path).convert("RGB")
+                # Draw circle markers at the two points (VPBench standard)
+                marked = _draw_markers_on_image(image, {"A": point_a, "B": point_b})
+            except Exception:
+                continue
+
+            task_samples.append({
+                "prompt": prompt,
+                "images": [marked],
+                "answer": answer,
+                "_n_choices": n_choices,
+            })
+
+        samples_by_task[task_name] = task_samples
+        print(f"    {task_name}: {len(task_samples)} samples loaded")
+
+    # ── Semantic correspondence (paired images, 4-choice) ──
+    sem_samples = []
+    sem_download_tasks = []
+
+    for json_path, img_dir in semantic_subsets:
+        url = f"{BASE_URL}/{json_path}"
+        try:
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            print(f"    WARNING: Failed to load {json_path}: {e}")
+            continue
+
+        # Data is a dict with split keys (val, test)
+        if isinstance(data, dict):
+            items = []
+            for split_items in data.values():
+                if isinstance(split_items, list):
+                    items.extend(split_items)
+        elif isinstance(data, list):
+            items = data
+        else:
+            continue
+
+        for item in items:
+            if max_per_task and len(sem_samples) + len(sem_download_tasks) >= max_per_task:
+                break
+
+            # Parse image IDs: '000000-2010_003655-2008_004726:aeroplane_1'
+            image_ids = item.get("images", [])
+            if len(image_ids) < 2:
+                continue
+
+            # Extract category and source/target image filenames
+            # Format: index-src_id-trg_id:category_imgnum
+            try:
+                parts = image_ids[0].split(":")
+                category = parts[1].rsplit("_", 1)[0]
+                prefix_parts = parts[0].split("-")
+                src_id = prefix_parts[1]
+                trg_id = prefix_parts[2]
+                img1_path = f"{category}/{src_id}.jpg"
+                img2_path = f"{category}/{trg_id}.jpg"
+            except (IndexError, ValueError):
+                continue
+
+            # Cache paths
+            safe1 = f"{img_dir.replace('/', '_')}_{category}_{src_id}.jpg"
+            safe2 = f"{img_dir.replace('/', '_')}_{category}_{trg_id}.jpg"
+            cache1 = CACHE_DIR / safe1
+            cache2 = CACHE_DIR / safe2
+
+            for img_path, cache_path in [(img1_path, cache1), (img2_path, cache2)]:
+                if not cache_path.exists():
+                    img_url = f"{BASE_URL}/{img_dir}/{img_path}"
+                    sem_download_tasks.append((img_url, cache_path))
+
+            item["_cache1"] = cache1
+            item["_cache2"] = cache2
+            item["_img_dir"] = img_dir
+            sem_samples.append(item)
+
+    # Download semantic images in parallel
+    if sem_download_tasks:
+        # Deduplicate
+        seen = set()
+        unique_tasks = []
+        for url, path in sem_download_tasks:
+            if str(path) not in seen:
+                seen.add(str(path))
+                unique_tasks.append((url, path))
+
+        print(f"    VPBench_Semantic: downloading {len(unique_tasks)} images...")
+        n_done = 0
+        with ThreadPoolExecutor(max_workers=32) as executor:
+            futures = {executor.submit(download_image, u, p): (u, p)
+                       for u, p in unique_tasks}
+            for future in as_completed(futures):
+                n_done += 1
+                if n_done % 200 == 0:
+                    print(f"      Downloaded {n_done}/{len(unique_tasks)}...", flush=True)
+        print(f"      Downloaded {n_done} images")
+
+    # Build semantic samples — draw REF on img1, A/B/C/D on img2 using keypoints
+    ANNOTATE_RATIO = 2  # VPBench default
+    sem_task_samples = []
+    for item in sem_samples:
+        prompt = item.get("prompt", "")
+        choices = item.get("choices", [])
+        answer = item.get("answer", item.get("real_answer", ""))
+
+        if not prompt or not choices or not answer:
+            continue
+
+        # Parse answer: "(D)" → "D"
+        import re
+        m = re.search(r"\(([A-Z])\)", str(answer))
+        answer = m.group(1) if m else str(answer).strip().strip("()")
+
+        # Required fields for marker rendering
+        blink_size1 = item.get("blink_image1_size")
+        blink_size2 = item.get("blink_image2_size")
+        gold_point = item.get("gold_point")
+        real_cp = item.get("real_consider_points") or item.get("consider_points")
+        src_kps = item.get("src_kps")
+        trg_kps = item.get("trg_kps")
+
+        if not all([blink_size1, blink_size2, real_cp, src_kps, trg_kps]) or gold_point is None:
+            continue
+
+        try:
+            orig_img1 = Image.open(item["_cache1"]).convert("RGB")
+            orig_img2 = Image.open(item["_cache2"]).convert("RGB")
+        except Exception:
+            continue
+
+        # Resize images to blink_size / annotate_ratio
+        new_size1 = (blink_size1[0] // ANNOTATE_RATIO, blink_size1[1] // ANNOTATE_RATIO)
+        new_size2 = (blink_size2[0] // ANNOTATE_RATIO, blink_size2[1] // ANNOTATE_RATIO)
+
+        scale_x1 = new_size1[0] / orig_img1.size[0]
+        scale_y1 = new_size1[1] / orig_img1.size[1]
+        scale_x2 = new_size2[0] / orig_img2.size[0]
+        scale_y2 = new_size2[1] / orig_img2.size[1]
+
+        # Scale keypoints
+        try:
+            point_ref = [src_kps[gold_point][0] * scale_x1,
+                         src_kps[gold_point][1] * scale_y1]
+            points = {}
+            for i, label in enumerate(["A", "B", "C", "D"]):
+                if i >= len(real_cp):
+                    break
+                cp = real_cp[i]
+                points[label] = [trg_kps[cp][0] * scale_x2,
+                                 trg_kps[cp][1] * scale_y2]
+        except (IndexError, TypeError):
+            continue
+
+        if len(points) != 4:
+            continue
+
+        # Resize images
+        img1 = orig_img1.resize(new_size1, Image.Resampling.LANCZOS)
+        img2 = orig_img2.resize(new_size2, Image.Resampling.LANCZOS)
+
+        # Draw markers
+        try:
+            marked1 = _draw_markers_on_image(img1, {"REF": point_ref})
+            marked2 = _draw_markers_on_image(img2, points)
+        except Exception:
+            continue
+
+        # Use prompt as-is (already contains full VPBench instruction)
+        full_prompt = prompt.rstrip()
+        if not full_prompt.endswith(":"):
+            full_prompt = full_prompt + "\nAnswer:"
+
+        sem_task_samples.append({
+            "prompt": full_prompt,
+            "images": [marked1, marked2],
+            "answer": answer,
+            "_n_choices": len(choices),
+        })
+
+    if sem_task_samples:
+        samples_by_task["VPBench_Semantic"] = sem_task_samples
+        print(f"    VPBench_Semantic: {len(sem_task_samples)} samples loaded")
+
+    return samples_by_task
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MedBLINK loader
+# ═══════════════════════════════════════════════════════════════════
+
+def load_medblink():
+    """Load MedBLINK. Returns dict of task_name → list of standardized samples."""
+    from centroid_erasure.data.medblink import load_medblink as _load
+    raw = _load()
+    samples_by_task = {}
+    for task_name, slist in raw.items():
+        standardized = []
+        for s in slist:
+            prompt = s.get("prompt", s.get("question", ""))
+            images = s.get("images", [s["image"]] if s.get("image") else [])
+            answer = str(s.get("answer", "")).strip()
+            nc = s.get("_n_choices", 4)
+
+            if not prompt or not images or not answer:
+                continue
+
+            # Normalize answer — preserve lowercase for binary "yes"/"no"
+            # tasks (get_pred returns lowercase); use parse_mc_answer for MC.
+            if answer.lower() in ("yes", "no"):
+                answer = answer.lower()
+            else:
+                answer = parse_mc_answer(answer) or answer.strip().upper()
+
+            standardized.append({
+                "prompt": prompt,
+                "images": images,
+                "answer": answer,
+                "_n_choices": nc,
+            })
+        samples_by_task[f"MedBLINK_{task_name}"] = standardized
+        print(f"    MedBLINK_{task_name}: {len(standardized)} samples")
+    return samples_by_task
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Medical model loaders
+# ═══════════════════════════════════════════════════════════════════
+
+def find_lm_layers_generic(model, model_name):
+    """Find LM layers for non-standard model architectures."""
+    # Reuse the logic from medical_vlm_medblink.py
+    candidates = []
+    for name1, mod1 in model.named_children():
+        for name2, mod2 in mod1.named_children():
+            if hasattr(mod2, '__len__') and len(mod2) > 10:
+                candidates.append((f"{name1}.{name2}", list(mod2), len(mod2)))
+            for name3, mod3 in mod2.named_children():
+                if hasattr(mod3, '__len__') and len(mod3) > 10:
+                    candidates.append((f"{name1}.{name2}.{name3}", list(mod3), len(mod3)))
+
+    if candidates:
+        best = max(candidates, key=lambda x: x[2])
+        print(f"    Found layers at: {best[0]} ({best[2]} layers)")
+        return best[1]
+
+    print(f"    WARNING: Could not find LM layers for {model_name}")
+    return None
+
+
+def load_medical_model(model_name):
+    """Load a medical model. Returns (model, processor, lm_layers, name)."""
+    from transformers import AutoProcessor, AutoModelForImageTextToText
+
+    if model_name == "medgemma":
+        model_id = "google/medgemma-1.5-4b-it"
+        print(f"    Loading {model_id} (bf16, ~8 GB VRAM)...")
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id, torch_dtype=torch.bfloat16, device_map="auto",
+        )
+        vram = torch.cuda.memory_allocated() / 1e9
+        print(f"    VRAM after load: {vram:.1f} GB")
+        lm_layers = find_lm_layers_generic(model, "medgemma")
+        return model, processor, lm_layers, "medgemma"
+
+    elif model_name == "medvlm_r1":
+        from transformers import AutoConfig
+        model_id = "JZPeterPan/MedVLM-R1"
+        print(f"    Loading {model_id}...")
+        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+        config.use_cache = False
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id, config=config, torch_dtype=torch.bfloat16,
+            device_map="auto", trust_remote_code=True,
+        )
+        lm_layers = find_lm_layers_generic(model, "medvlm_r1")
+        return model, processor, lm_layers, "medvlm_r1"
+
+    elif model_name == "medgemma_27b":
+        from transformers import BitsAndBytesConfig
+        model_id = "google/medgemma-27b-it"
+        print(f"    Loading {model_id} (8-bit quantized, ~27GB VRAM)...")
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id, torch_dtype=torch.bfloat16,
+            quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+            device_map="auto",
+        )
+        vram = torch.cuda.memory_allocated() / 1e9
+        print(f"    VRAM after load: {vram:.1f} GB")
+        if vram > 45:
+            print(f"    WARNING: VRAM very tight ({vram:.1f}/48 GB)")
+        lm_layers = find_lm_layers_generic(model, "medgemma_27b")
+        return model, processor, lm_layers, "medgemma_27b"
+
+    else:
+        raise ValueError(f"Unknown medical model: {model_name}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Centroid fitting (mirrors cross_model_sweep_v2.cache_and_fit)
+# ═══════════════════════════════════════════════════════════════════
+
+def fit_centroids(X):
+    """Fit K-means centroids. Matches cross_model_sweep_v2.fit_centroids."""
+    X = X.astype(np.float32)
+    finite_mask = np.isfinite(X).all(axis=1)
+    n_bad = (~finite_mask).sum()
+    if n_bad > 0:
+        print(f"    Filtered {n_bad}/{len(X)} non-finite rows")
+        X = X[finite_mask]
+    try:
+        import faiss
+        kmeans = faiss.Kmeans(X.shape[1], K, niter=20, gpu=True, seed=KMEANS_SEED)
+        kmeans.train(X)
+        print(f"    Fitted K={K} with faiss-gpu ({len(X)} tokens)")
+        return KMeansCentroids(kmeans.centroids)
+    except Exception:
+        from sklearn.cluster import MiniBatchKMeans
+        km = MiniBatchKMeans(n_clusters=K, random_state=KMEANS_SEED,
+                             batch_size=4096, n_init=3)
+        km.fit(X)
+        print(f"    Fitted K={K} with sklearn ({len(X)} tokens)")
+        return KMeansCentroids(km.cluster_centers_)
+
+
+def cache_and_fit(model, processor, model_name, lm_layers, device):
+    """Cache COCO activations and fit BOTH visual and text centroids.
+
+    Exact mirror of cross_model_sweep_v2.cache_and_fit, so medical-model
+    centroids have the same statistical properties as general-model ones.
+    """
+    from datasets import load_dataset
+    from centroid_erasure.visual_tokens import find_visual_token_range
+
+    text_cfg = getattr(model.config, 'text_config', model.config)
+    hidden_dim = text_cfg.hidden_size
+    n_layers = len(lm_layers)
+    vis_layer = 16 if n_layers > 16 else n_layers // 2
+    text_layer = TEXT_LAYER if n_layers > TEXT_LAYER else max(1, int(n_layers * 0.4))
+
+    print(f"  Caching {MAX_IMAGES} COCO images "
+          f"(vis L{vis_layer}, text L{text_layer})...")
+
+    max_vis = MAX_IMAGES * 400
+    max_text = MAX_IMAGES * 60
+    vis_tokens = np.empty((max_vis, hidden_dim), dtype=np.float16)
+    text_tokens = np.empty((max_text, hidden_dim), dtype=np.float16)
+    vis_cursor = 0
+    text_cursor = 0
+    n_cached = 0
+
+    ds = load_dataset("detection-datasets/coco", split="train", streaming=True)
+    ds = ds.shuffle(seed=DATA_SEED, buffer_size=1000)
+
+    t_start = time.time()
+
+    for item in ds:
+        if n_cached >= MAX_IMAGES:
+            break
+        img = item.get("image")
+        if img is None:
+            continue
+
+        prompt = "Describe what you see in this image.\nAnswer:"
+        try:
+            inputs, _ = prepare_inputs(model_name, processor, prompt,
+                                       [img.convert("RGB")], device)
+        except Exception:
+            continue
+
+        input_ids = inputs.get("input_ids")
+        captured = {}
+
+        def make_hook(name):
+            def fn(module, inp, out):
+                h = out[0] if isinstance(out, tuple) else out
+                captured[name] = h.detach().cpu()
+            return fn
+
+        handles = []
+        if vis_layer < n_layers:
+            handles.append(lm_layers[vis_layer].register_forward_hook(make_hook("vis")))
+        handles.append(lm_layers[text_layer].register_forward_hook(make_hook("text")))
+        try:
+            with torch.no_grad():
+                model(**inputs)
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            for h in handles:
+                h.remove()
+            torch.cuda.empty_cache()
+            continue
+        for h in handles:
+            h.remove()
+
+        # Compute visual token range once (using vis hidden state if available)
+        ref_h = captured.get("vis", captured.get("text"))
+        if ref_h is not None:
+            try:
+                vs, ve = find_visual_token_range(
+                    model_name, input_ids, ref_h.to(device), processor)
+            except Exception:
+                ve = max(int(input_ids.shape[1] * 0.7), input_ids.shape[1] - 100)
+                vs = 10
+        else:
+            vs, ve = 10, max(int(input_ids.shape[1] * 0.7), input_ids.shape[1] - 100)
+
+        if "vis" in captured:
+            vis_h = captured["vis"][0, vs:ve, :].half().numpy()
+            n = len(vis_h)
+            if n > 0 and vis_cursor + n <= max_vis:
+                vis_tokens[vis_cursor:vis_cursor + n] = vis_h
+                vis_cursor += n
+
+        if "text" in captured:
+            text_h = captured["text"][0, ve:, :].half().numpy()
+            n = len(text_h)
+            if n > 0 and text_cursor + n <= max_text:
+                text_tokens[text_cursor:text_cursor + n] = text_h
+                text_cursor += n
+
+        n_cached += 1
+        if n_cached % 500 == 0:
+            elapsed = time.time() - t_start
+            rate = n_cached / elapsed * 60
+            print(f"    {n_cached}/{MAX_IMAGES} ({vis_cursor} vis, {text_cursor} text) "
+                  f"[{rate:.0f} img/min]", flush=True)
+
+        del captured, inputs
+        if n_cached % 100 == 0:
+            torch.cuda.empty_cache()
+
+    print(f"    Done: {n_cached} images, {vis_cursor} vis, {text_cursor} text tokens")
+
+    # Fit visual centroids
+    vis_mfa = None
+    if vis_cursor >= K:
+        print(f"    Fitting visual centroids...")
+        vis_mfa = fit_centroids(vis_tokens[:vis_cursor])
+    else:
+        print(f"    WARNING: only {vis_cursor} vis tokens for K={K}")
+    del vis_tokens
+
+    # Fit text centroids
+    text_mfa = None
+    if text_cursor >= K:
+        print(f"    Fitting text centroids...")
+        text_mfa = fit_centroids(text_tokens[:text_cursor])
+    else:
+        print(f"    WARNING: only {text_cursor} text tokens for K={K}")
+    del text_tokens
+
+    gc.collect()
+    return vis_mfa, text_mfa, vis_layer, text_layer
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Shared evaluation (mirrors cross_model_sweep_v2.run_sweep, sans segments)
+# ═══════════════════════════════════════════════════════════════════
+
+def run_sweep(model, processor, model_name, lm_layers, device,
+              vis_mfa, text_mfa, samples_by_task, alpha_cd,
+              vis_layer=16, text_layer=12):
+    """Run sufficiency (vis + text) + alpha sweep on a dict of tasks.
+
+    Exact mirror of cross_model_sweep_v2.run_sweep, but without segment ablation
+    (VPBench/MedBLINK prompts don't have the options/question/system structure
+    that ablation requires). Returns the same `sufficiency` + `alpha_sweep` dict
+    layout, with McNemar's tests and Wilson CIs.
+    """
+    results = {"sufficiency": {}, "alpha_sweep": {}}
+
+    for task_name, samples in samples_by_task.items():
+        if not samples:
+            continue
+
+        is_binary = str(samples[0].get("answer", "")).strip().lower() in ("yes", "no")
+        nc = samples[0].get("_n_choices", 4)
+        letters = ALL_LETTERS[:nc]
+        cids = get_choice_token_ids(processor, letters)
+        bids = get_binary_token_ids(processor)
+
+        def get_pred(logits):
+            if is_binary:
+                yn = max((logits[t].item() for t in bids["yes"]), default=-1e9)
+                nn = max((logits[t].item() for t in bids["no"]), default=-1e9)
+                return "yes" if yn > nn else "no"
+            else:
+                cl = {l: logits[cids[l]].item() for l in letters if l in cids}
+                return max(cl, key=cl.get) if cl else "?"
+
+        task_alpha_results = {a: {"correct": 0, "total": 0} for a in SWEEP_ALPHAS}
+        suf_results = {"vis": {"correct": 0, "total": 0},
+                       "text": {"correct": 0, "total": 0}}
+        baseline_correct = 0
+        total = 0
+        per_sample = []
+        n_samples = len(samples)
+        t_start = time.time()
+
+        for si, sample in enumerate(samples):
+            prompt = sample.get("prompt", sample.get("question", ""))
+            images = (sample.get("images") or
+                      ([sample["image"]] if sample.get("image") else []))
+            if not images or not prompt:
+                continue
+
+            try:
+                inputs, _ = prepare_inputs(model_name, processor, prompt,
+                                           images, device)
+            except Exception:
+                continue
+
+            input_ids = inputs.get("input_ids")
+            raw_ans = str(sample.get("answer", "")).strip()
+            if is_binary:
+                gt = raw_ans.lower()
+            else:
+                gt = parse_mc_answer(raw_ans) or raw_ans.upper()
+
+            # Baseline
+            try:
+                with torch.no_grad():
+                    out_n = model(**inputs)
+                logits_n = out_n.logits[0, -1, :].float()
+                del out_n
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                torch.cuda.empty_cache()
+                continue
+
+            pred_bl = get_pred(logits_n)
+            bl_correct = (pred_bl == gt)
+            total += 1
+            if bl_correct:
+                baseline_correct += 1
+            sample_preds = {"bl_correct": bl_correct}
+
+            # Visual centroid sufficiency (α=0)
+            if vis_mfa is not None:
+                def vis_hook_fn(module, inp, output):
+                    from centroid_erasure.visual_tokens import find_visual_token_range
+                    h = output[0] if isinstance(output, tuple) else output
+                    h = h.clone()
+                    dtype, dev = h.dtype, h.device
+                    sl = h.shape[1]
+                    try:
+                        vs, ve = find_visual_token_range(
+                            model_name, input_ids, h, processor)
+                    except Exception:
+                        vs, ve = 10, max(int(sl * 0.7), sl - 100)
+                    if ve > vs and ve - vs >= 2:
+                        vis_mfa.to_device(dev)
+                        tokens = h[0, vs:ve, :].float()
+                        if tokens.shape[1] == vis_mfa.mu.shape[1]:
+                            replaced = vis_mfa.replace(tokens, 0.0)
+                            h[0, vs:ve, :] = replaced.to(dtype)
+                    return (h,) + output[1:] if isinstance(output, tuple) else h
+
+                handle = lm_layers[vis_layer].register_forward_hook(vis_hook_fn)
+                try:
+                    with torch.no_grad():
+                        out_v = model(**inputs)
+                    pred_vis = get_pred(out_v.logits[0, -1, :].float())
+                    del out_v
+                except (torch.cuda.OutOfMemoryError, RuntimeError):
+                    pred_vis = pred_bl
+                handle.remove()
+
+                suf_results["vis"]["total"] += 1
+                if pred_vis == gt:
+                    suf_results["vis"]["correct"] += 1
+
+            # Text centroid sufficiency (α=0)
+            if text_mfa is not None:
+                hook = TextCDHook(text_mfa, model_name, processor,
+                                  alpha_interp=0.0)
+                hook.set_input(input_ids)
+                handle = lm_layers[text_layer].register_forward_hook(hook)
+                try:
+                    with torch.no_grad():
+                        out_t = model(**inputs)
+                    pred_text = get_pred(out_t.logits[0, -1, :].float())
+                    del out_t
+                except (torch.cuda.OutOfMemoryError, RuntimeError):
+                    pred_text = pred_bl
+                handle.remove()
+
+                suf_results["text"]["total"] += 1
+                if pred_text == gt:
+                    suf_results["text"]["correct"] += 1
+
+            # Alpha sweep
+            for alpha in SWEEP_ALPHAS:
+                hook = TextCDHook(text_mfa, model_name, processor,
+                                  alpha_interp=alpha)
+                hook.set_input(input_ids)
+                handle = lm_layers[text_layer].register_forward_hook(hook)
+                try:
+                    with torch.no_grad():
+                        out_e = model(**inputs)
+                    logits_e = out_e.logits[0, -1, :].float()
+                    logits_cd = logits_n + alpha_cd * (logits_n - logits_e)
+                    pred_cd = get_pred(logits_cd)
+                    del out_e
+                except (torch.cuda.OutOfMemoryError, RuntimeError):
+                    pred_cd = pred_bl
+                handle.remove()
+
+                cd_correct = (pred_cd == gt)
+                task_alpha_results[alpha]["total"] += 1
+                if cd_correct:
+                    task_alpha_results[alpha]["correct"] += 1
+                sample_preds[f"cd_{alpha}"] = cd_correct
+
+            per_sample.append(sample_preds)
+
+            del logits_n, inputs
+            if total % 50 == 0:
+                torch.cuda.empty_cache()
+                elapsed = time.time() - t_start
+                rate = total / elapsed if elapsed > 0 else 0
+                eta = (n_samples - si - 1) / rate / 60 if rate > 0 else 0
+                print(f"      {task_name}: {si+1}/{n_samples} "
+                      f"[{rate:.1f} s/s, ~{eta:.0f}m]", flush=True)
+
+        # ── Compile task results ──
+        bl_acc = baseline_correct / total if total > 0 else 0
+        _, bl_lo, bl_hi = wilson_ci(baseline_correct, total)
+
+        alpha_compiled = {}
+        for alpha in SWEEP_ALPHAS:
+            ar = task_alpha_results[alpha]
+            cd_acc = ar["correct"] / ar["total"] if ar["total"] > 0 else 0
+
+            # McNemar's test: paired bl vs cd
+            alpha_key = f"cd_{alpha}"
+            b = sum(1 for s in per_sample if s["bl_correct"]
+                    and not s.get(alpha_key, False))
+            c = sum(1 for s in per_sample if not s["bl_correct"]
+                    and s.get(alpha_key, False))
+            n_discordant = b + c
+            if n_discordant > 0:
+                mcnemar_chi2 = (c - b) ** 2 / n_discordant
+                from scipy.stats import chi2 as chi2_dist
+                mcnemar_p = float(chi2_dist.sf(mcnemar_chi2, df=1))
+            else:
+                mcnemar_chi2 = 0.0
+                mcnemar_p = 1.0
+
+            _, cd_lo, cd_hi = wilson_ci(ar["correct"], ar["total"])
+
+            alpha_compiled[str(alpha)] = {
+                "cd_accuracy": round(cd_acc, 4),
+                "cd_ci": [round(cd_lo, 4), round(cd_hi, 4)],
+                "delta": round(cd_acc - bl_acc, 4),
+                "n": ar["total"],
+                "mcnemar_b": b,
+                "mcnemar_c": c,
+                "mcnemar_p": round(mcnemar_p, 4),
+            }
+
+        vis_suf = suf_results["vis"]
+        text_suf = suf_results["text"]
+        vis_acc = (vis_suf["correct"] / vis_suf["total"]
+                   if vis_suf["total"] > 0 else bl_acc)
+        text_acc = (text_suf["correct"] / text_suf["total"]
+                    if text_suf["total"] > 0 else bl_acc)
+
+        results["sufficiency"][task_name] = {
+            "baseline": round(bl_acc, 4),
+            "vis_centroid_accuracy": round(vis_acc, 4),
+            "vis_centroid_cost": round(bl_acc - vis_acc, 4),
+            "text_centroid_accuracy": round(text_acc, 4),
+            "text_centroid_cost": round(bl_acc - text_acc, 4),
+            "n": total,
+        }
+
+        best_entry = max(alpha_compiled.items(), key=lambda x: x[1]["delta"])
+        results["alpha_sweep"][task_name] = {
+            "baseline": round(bl_acc, 4),
+            "baseline_ci": [round(bl_lo, 4), round(bl_hi, 4)],
+            "n": total,
+            "alphas": alpha_compiled,
+            "best_alpha": best_entry[0],
+            "best_delta": best_entry[1]["delta"],
+        }
+
+        vis_cost = results["sufficiency"][task_name]["vis_centroid_cost"]
+        text_cost = results["sufficiency"][task_name]["text_centroid_cost"]
+        eval_time = time.time() - t_start
+        print(f"    {task_name:<30s} n={total:>5d}  bl={bl_acc:.3f}  "
+              f"vis={vis_cost:+.3f}  text={text_cost:+.3f}  "
+              f"best_α={best_entry[0]} Δ={best_entry[1]['delta']:+.4f}  "
+              f"({eval_time/60:.1f}min)")
+
+    # Summary
+    vis_costs = [v["vis_centroid_cost"] for v in results["sufficiency"].values()]
+    text_costs = [v["text_centroid_cost"] for v in results["sufficiency"].values()]
+    all_best = [v["best_delta"] for v in results["alpha_sweep"].values()]
+    all_fixed = [v["alphas"].get("0.4", {}).get("delta", 0)
+                 for v in results["alpha_sweep"].values()]
+    if vis_costs and text_costs:
+        results["_summary"] = {
+            "mean_vis_cost": round(float(np.mean(vis_costs)), 4),
+            "mean_text_cost": round(float(np.mean(text_costs)), 4),
+            "asymmetry_ratio": round(
+                float(np.mean(text_costs)) /
+                max(abs(float(np.mean(vis_costs))), 0.001), 1),
+            "mean_best_delta": round(float(np.mean(all_best)), 4),
+            "mean_fixed_delta": round(float(np.mean(all_fixed)), 4),
+            "n_tasks_positive_best": sum(1 for d in all_best if d > 0),
+            "n_tasks_positive_fixed": sum(1 for d in all_fixed if d > 0),
+        }
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="VPBench + MedBLINK sweep")
+    parser.add_argument("--parts", type=str, default="vpbench,medblink",
+                        help="Which parts to run (vpbench, medblink, or both)")
+    parser.add_argument("--models", type=str, default=None,
+                        help="Override model list (comma-separated)")
+    parser.add_argument("--resume_from", type=str, default=None)
+    parser.add_argument("--sanity", action="store_true",
+                        help="Test loaders + check MedGemma 27B VRAM. No full eval.")
+    args = parser.parse_args()
+
+    parts = args.parts.split(",")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if args.resume_from:
+        out_dir = Path(args.resume_from)
+    else:
+        out_dir = Path(f"results/vpbench_medblink_{timestamp}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Sanity mode ──
+    if args.sanity:
+        print("*** SANITY CHECK ***\n")
+
+        if "vpbench" in parts:
+            print("1. VPBench loader...")
+            try:
+                vp = load_vpbench(max_samples=10)
+                for k, v in vp.items():
+                    print(f"   {k}: {len(v)} samples")
+                    if v:
+                        print(f"     answer={v[0]['answer']}, n_choices={v[0]['_n_choices']}")
+                print("   VPBench: OK\n")
+            except Exception as e:
+                print(f"   VPBench: FAILED — {e}\n")
+
+        if "medblink" in parts:
+            print("2. MedBLINK loader...")
+            try:
+                mb = load_medblink()
+                total = sum(len(v) for v in mb.values())
+                print(f"   {len(mb)} tasks, {total} total samples")
+                print("   MedBLINK: OK\n")
+            except Exception as e:
+                print(f"   MedBLINK: FAILED — {e}\n")
+
+            print("3. Medical models...")
+            for med_name in MEDICAL_MODELS:
+                print(f"   Loading {med_name}...")
+                try:
+                    model, processor, lm_layers, _ = load_medical_model(med_name)
+                    n_layers = len(lm_layers) if lm_layers else 0
+                    vram = torch.cuda.memory_allocated() / 1e9
+                    print(f"   {med_name}: OK ({n_layers} layers, {vram:.1f} GB VRAM)")
+                    del model, processor
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                except Exception as e:
+                    print(f"   {med_name}: FAILED — {e}")
+                    torch.cuda.empty_cache()
+
+        print("\n*** Sanity check done. ***")
+        return
+
+    # ── Full run ──
+    print(f"{'='*65}")
+    print(f"  VPBench + MedBLINK Sweep")
+    print(f"{'='*65}")
+    print(f"  Parts: {parts}")
+    print(f"  Protocol: N={MAX_IMAGES}, K={K}, α_cd={ALPHA_CD}, "
+          f"text L{TEXT_LAYER}, vis L16")
+    print(f"  Output: {out_dir}")
+    print()
+
+    # Save config for reproducibility
+    config = {
+        "parts": parts,
+        "alpha_cd": ALPHA_CD,
+        "sweep_alphas": SWEEP_ALPHAS,
+        "max_images": MAX_IMAGES,
+        "K": K,
+        "text_layer": TEXT_LAYER,
+        "data_seed": DATA_SEED,
+        "kmeans_seed": KMEANS_SEED,
+        "general_models": GENERAL_MODELS,
+        "medical_models": MEDICAL_MODELS,
+        "phase2_dir": str(PHASE2_DIR),
+    }
+    with open(out_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2)
+
+    def get_centroids_and_layers(model, processor, model_name, lm_layers,
+                                 is_medical):
+        """Load Phase 2 centroids for general models, fit fresh for medical.
+
+        Returns (vis_mfa, text_mfa, vis_layer, text_layer).
+        Matches the vis_layer policy of cross_model_sweep_v2 (L16 or n//2).
+        """
+        n_layers = len(lm_layers)
+        vis_layer = 16 if n_layers > 16 else n_layers // 2
+        text_layer = (TEXT_LAYER if n_layers > TEXT_LAYER
+                      else max(1, int(n_layers * 0.4)))
+
+        if is_medical:
+            # Fit both vis + text centroids fresh from 2K COCO
+            vis_mfa, text_mfa, vis_layer, text_layer = cache_and_fit(
+                model, processor, model_name, lm_layers, device)
+            # Save for reproducibility
+            save_dict = {}
+            if vis_mfa is not None:
+                save_dict["vis_centroids"] = vis_mfa.mu.cpu().numpy()
+            if text_mfa is not None:
+                save_dict["text_centroids"] = text_mfa.mu.cpu().numpy()
+            if save_dict:
+                np.savez(out_dir / f"{model_name}_centroids.npz", **save_dict)
+            return vis_mfa, text_mfa, vis_layer, text_layer
+
+        # General model: load from Phase 2 (has both vis and text centroids)
+        centroid_path = PHASE2_DIR / f"{model_name}_centroids.npz"
+        if not centroid_path.exists():
+            print(f"  WARNING: no Phase 2 centroids at {centroid_path}")
+            return None, None, vis_layer, text_layer
+        z = np.load(centroid_path)
+        vis_mfa = (KMeansCentroids(z["vis_centroids"])
+                   if "vis_centroids" in z.files else None)
+        text_mfa = (KMeansCentroids(z["text_centroids"])
+                    if "text_centroids" in z.files else None)
+        return vis_mfa, text_mfa, vis_layer, text_layer
+
+    def run_model_on_tasks(model_name, samples_by_task, out_path, is_medical):
+        """Load model, get centroids, run sweep, save results."""
+        print(f"\n  Model: {model_name}")
+
+        try:
+            if is_medical:
+                model, processor, lm_layers, _ = load_medical_model(model_name)
+            else:
+                cfg = get_config(model_name)
+                model, processor, _ = load_model(model_name)
+                lm_layers = find_lm_layers(model, cfg)
+        except Exception as e:
+            print(f"  ERROR loading {model_name}: {e}")
+            import traceback; traceback.print_exc()
+            torch.cuda.empty_cache()
+            return
+
+        if lm_layers is None:
+            print(f"  ERROR: could not find LM layers")
+            del model, processor
+            gc.collect(); torch.cuda.empty_cache()
+            return
+
+        vis_mfa, text_mfa, vis_layer, text_layer = get_centroids_and_layers(
+            model, processor, model_name, lm_layers, is_medical)
+
+        if text_mfa is None:
+            print(f"  Skipping {model_name} (no text centroids)")
+            del model, processor
+            gc.collect(); torch.cuda.empty_cache()
+            return
+
+        if vis_mfa is None:
+            print(f"  NOTE: no visual centroids available — "
+                  f"will skip vis sufficiency for {model_name}")
+
+        results = run_sweep(model, processor, model_name, lm_layers, device,
+                            vis_mfa, text_mfa, samples_by_task, ALPHA_CD,
+                            vis_layer=vis_layer, text_layer=text_layer)
+
+        with open(out_path, "w") as f:
+            json.dump(results, f, indent=2, default=numpy_safe)
+        print(f"  Saved → {out_path}")
+
+        del model, processor, text_mfa, vis_mfa
+        gc.collect(); torch.cuda.empty_cache()
+
+    # ── Part 1: VPBench (7 general models) ──
+    if "vpbench" in parts:
+        print("\n" + "="*65)
+        print("  PART 1: VPBench")
+        print("="*65)
+
+        print("\nLoading VPBench...")
+        vp_tasks = load_vpbench()
+
+        vp_models = args.models.split(",") if args.models else GENERAL_MODELS
+
+        for model_name in vp_models:
+            out_path = out_dir / f"{model_name}_vpbench.json"
+            if out_path.exists():
+                print(f"\n  {model_name} VPBench — already done, skipping")
+                continue
+            is_medical = model_name in MEDICAL_MODELS
+            run_model_on_tasks(model_name, vp_tasks, out_path, is_medical)
+
+    # ── Part 2: MedBLINK (7 general + medical models) ──
+    if "medblink" in parts:
+        print("\n" + "="*65)
+        print("  PART 2: MedBLINK")
+        print("="*65)
+
+        print("\nLoading MedBLINK...")
+        mb_tasks = load_medblink()
+
+        if args.models:
+            mb_models = args.models.split(",")
+        else:
+            mb_models = GENERAL_MODELS + MEDICAL_MODELS
+
+        for model_name in mb_models:
+            out_path = out_dir / f"{model_name}_medblink.json"
+            if out_path.exists():
+                print(f"\n  {model_name} MedBLINK — already done, skipping")
+                continue
+            is_medical = model_name in MEDICAL_MODELS
+            run_model_on_tasks(model_name, mb_tasks, out_path, is_medical)
+
+    print(f"\n{'='*65}")
+    print(f"  DONE — results in {out_dir}/")
+    print(f"{'='*65}")
+
+
+if __name__ == "__main__":
+    main()

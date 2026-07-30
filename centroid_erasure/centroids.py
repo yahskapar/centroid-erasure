@@ -12,6 +12,7 @@ alpha_interp=1 is the identity. This is the sign convention used throughout
 the paper; note that it is the opposite of "erasure strength".
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -82,14 +83,18 @@ class CentroidBank:
     # ── persistence ──
 
     @classmethod
-    def load(cls, path, modality="text"):
+    def load(cls, path, modality="text", expected_model=None):
         """Load a bank from a .npz written by `save_pair` or the paper pipeline.
 
         Args:
             path: path to the .npz file.
             modality: "text" or "visual" — selects which array to read.
+            expected_model: optional registry key. When supplied, fail closed
+                unless the bank embeds matching provenance or is a checksummed
+                shipped bank bound to that model in ``centroids/MANIFEST.json``.
         """
         key = {"text": "text_centroids", "visual": "vis_centroids"}[modality]
+        path = Path(path)
         with np.load(path, allow_pickle=False) as data:
             if key not in data.files:
                 raise KeyError(
@@ -107,6 +112,14 @@ class CentroidBank:
                     raise ValueError(
                         f"{path} metadata for {modality!r} must be an object"
                     )
+        manifest_meta = _manifest_provenance(path, modality)
+        for field, value in manifest_meta.items():
+            if field in persisted and persisted[field] != value:
+                raise ValueError(
+                    f"{path} metadata field {field!r} conflicts with its "
+                    "checksummed manifest record"
+                )
+            persisted.setdefault(field, value)
         recorded_modality = persisted.get("modality")
         if recorded_modality is not None and recorded_modality != modality:
             raise ValueError(
@@ -116,6 +129,21 @@ class CentroidBank:
         meta = dict(persisted)
         meta["path"] = str(path)
         meta.setdefault("modality", modality)
+        if expected_model is not None:
+            required = {"model", "model_id", "model_revision", "layer"}
+            missing = sorted(required - set(meta))
+            if missing:
+                raise ValueError(
+                    f"{path} has incomplete model provenance (missing {missing}). "
+                    "Use a bank fitted by `main.py fit`, or a checksummed bank "
+                    "listed in centroids/MANIFEST.json."
+                )
+            recorded_model = meta["model"]
+            if recorded_model != expected_model:
+                raise ValueError(
+                    f"{path} is bound to model {recorded_model!r}, not "
+                    f"{expected_model!r}"
+                )
         return cls(centers, meta=meta)
 
     @staticmethod
@@ -174,6 +202,43 @@ def _json_default(value):
     if isinstance(value, (np.bool_,)):
         return bool(value)
     raise TypeError(f"metadata value {value!r} is not JSON serializable")
+
+
+def _manifest_provenance(path, modality):
+    """Return verified provenance for a legacy shipped bank, if applicable.
+
+    The original paper banks predate embedded ``metadata_json``. Their
+    provenance therefore lives in the adjacent manifest. Merely matching the
+    hidden width is not sufficient: several released models share a width.
+    """
+    manifest_path = path.parent / "MANIFEST.json"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read centroid manifest {manifest_path}: {exc}") from exc
+
+    rel = f"{path.parent.name}/{path.name}"
+    record = manifest.get("files", {}).get(rel)
+    provenance = manifest.get("bank_provenance", {}).get(rel)
+    if record is None or provenance is None:
+        return {}
+
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != record.get("sha256"):
+        raise ValueError(
+            f"{path} does not match its recorded SHA-256 in {manifest_path}"
+        )
+
+    layer_key = "text_layer" if modality == "text" else "visual_layer"
+    return {
+        "model": provenance["model"],
+        "model_id": provenance["model_id"],
+        "model_revision": provenance["model_revision"],
+        "layer": provenance[layer_key],
+        "manifest_sha256": digest,
+    }
 
 
 def fit_centroids(X, k=DEFAULT_K, seed=DEFAULT_KMEANS_SEED, verbose=True):

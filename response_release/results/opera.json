@@ -1,0 +1,275 @@
+{
+  "config": {
+    "K_layers": 3,
+    "lambdas": [
+      0.5,
+      1.0,
+      5.0,
+      10.0,
+      50.0
+    ],
+    "model": "qwen"
+  },
+  "per_lambda": {
+    "0.5": {
+      "mcnemar_p": 1.0,
+      "mean_delta": 0.0,
+      "n_total": 40,
+      "per_task": {
+        "Counting": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Forensic_Detection": {
+          "b": 0,
+          "bl": 0.5,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.5
+        },
+        "Relative_Depth": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Spatial_Relation": {
+          "b": 0,
+          "bl": 0.875,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.875
+        },
+        "Visual_Similarity": {
+          "b": 0,
+          "bl": 0.375,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.375
+        }
+      }
+    },
+    "1.0": {
+      "mcnemar_p": 1.0,
+      "mean_delta": 0.0,
+      "n_total": 40,
+      "per_task": {
+        "Counting": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Forensic_Detection": {
+          "b": 0,
+          "bl": 0.5,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.5
+        },
+        "Relative_Depth": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Spatial_Relation": {
+          "b": 0,
+          "bl": 0.875,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.875
+        },
+        "Visual_Similarity": {
+          "b": 0,
+          "bl": 0.375,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.375
+        }
+      }
+    },
+    "10.0": {
+      "mcnemar_p": 1.0,
+      "mean_delta": 0.0,
+      "n_total": 40,
+      "per_task": {
+        "Counting": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Forensic_Detection": {
+          "b": 0,
+          "bl": 0.5,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.5
+        },
+        "Relative_Depth": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Spatial_Relation": {
+          "b": 0,
+          "bl": 0.875,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.875
+        },
+        "Visual_Similarity": {
+          "b": 0,
+          "bl": 0.375,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.375
+        }
+      }
+    },
+    "5.0": {
+      "mcnemar_p": 1.0,
+      "mean_delta": 0.0,
+      "n_total": 40,
+      "per_task": {
+        "Counting": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Forensic_Detection": {
+          "b": 0,
+          "bl": 0.5,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.5
+        },
+        "Relative_Depth": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Spatial_Relation": {
+          "b": 0,
+          "bl": 0.875,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.875
+        },
+        "Visual_Similarity": {
+          "b": 0,
+          "bl": 0.375,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.375
+        }
+      }
+    },
+    "50.0": {
+      "mcnemar_p": 1.0,
+      "mean_delta": 0.0,
+      "n_total": 40,
+      "per_task": {
+        "Counting": {
+          "b": 1,
+          "bl": 0.625,
+          "c": 0,
+          "delta": -0.125,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.5
+        },
+        "Forensic_Detection": {
+          "b": 0,
+          "bl": 0.5,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.5
+        },
+        "Relative_Depth": {
+          "b": 0,
+          "bl": 0.625,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.625
+        },
+        "Spatial_Relation": {
+          "b": 0,
+          "bl": 0.875,
+          "c": 0,
+          "delta": 0.0,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.875
+        },
+        "Visual_Similarity": {
+          "b": 0,
+          "bl": 0.375,
+          "c": 1,
+          "delta": 0.125,
+          "mcnemar_p": 1.0,
+          "n": 8,
+          "op": 0.5
+        }
+      }
+    }
+  }
+}

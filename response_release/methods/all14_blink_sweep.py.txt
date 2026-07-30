@@ -1,0 +1,609 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs
+from centroid_erasure.eval_mcqa import get_choice_token_ids
+from centroid_erasure.eval_binary import get_binary_token_ids
+from centroid_erasure.data.utils import parse_mc_answer
+from centroid_erasure.data.blink import ALL_TASKS as BLINK_ALL_TASKS, load_blink
+from protocol_snapshot.latent_factor_cd import ALL_LETTERS
+
+# Import the battle-tested centroid + hook machinery from Phase 2 (safe due to
+# the if __name__ == "__main__" guard in cross_model_sweep_v2.py)
+from pipeline.paper_sweep import (
+    KMeansCentroids,
+    TextCDHook,
+    wilson_ci,
+    numpy_safe,
+)
+
+# ── Protocol (matches Phase 2 exactly) ──
+PHASE2_DIR_DEFAULT = "results/cross_model_v2_20260407_144343"
+DEFAULT_ALPHA_CD = 1.0
+DEFAULT_SWEEP_ALPHAS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+FIXED_ALPHA_PRIMARY = 0.4  # paper's §E.3 reporting cell
+TEXT_LAYER = 12
+VIS_LAYER_DEFAULT = 16
+
+# Models to evaluate. Two are enough to answer the "6/14" objection cleanly:
+# - qwen (Qwen2.5-VL-7B SFT): primary deep-dive model
+# - qwen3 (Qwen3-VL-8B SFT+): paired to verify pattern under SFT+
+DEFAULT_MODELS = ["qwen", "qwen3"]
+
+# BLINK task partitioning relative to paper v1
+TASKS_IN_PAPER = [
+    "Forensic_Detection", "Visual_Similarity", "Art_Style",
+    "Counting", "Relative_Depth", "Spatial_Relation",
+]
+TASKS_EXCLUDED_BY_PAPER = [
+    "Multi-view_Reasoning", "Jigsaw", "Object_Localization",
+    "Visual_Correspondence", "Semantic_Correspondence",
+    "Relative_Reflectance", "Functional_Correspondence", "IQ_Test",
+]
+# BLINK_ALL_TASKS imported from centroid_erasure.data.blink — sanity assertion below
+
+
+def load_phase2_centroids(phase2_dir, model_key):
+    """Load existing K-means centroids from Phase 2 cache. Fails loudly."""
+    path = Path(phase2_dir) / f"{model_key}_centroids.npz"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Phase 2 centroids not found at {path}. "
+            f"This script reuses centroids from cross_model_v2_20260407_144343; "
+            f"it does NOT refit. If centroids are missing, run the Phase 2 "
+            f"sweep first."
+        )
+    data = np.load(path)
+    if "text_centroids" not in data or "vis_centroids" not in data:
+        raise KeyError(f"Expected 'text_centroids' and 'vis_centroids' in {path}; "
+                       f"got {list(data.keys())}")
+    text_mfa = KMeansCentroids(data["text_centroids"])
+    vis_mfa = KMeansCentroids(data["vis_centroids"])
+    print(f"  Loaded centroids: text {data['text_centroids'].shape}, "
+          f"vis {data['vis_centroids'].shape}")
+    return text_mfa, vis_mfa
+
+
+def evaluate_one_task(model, processor, model_name, samples, task_name,
+                       text_mfa, vis_mfa, lm_layers, device,
+                       alpha_cd, sweep_alphas,
+                       vis_layer=VIS_LAYER_DEFAULT, text_layer=TEXT_LAYER):
+    """
+    Per-task eval block. Identical machinery to cross_model_sweep_v2 but
+    isolated here so we can call it with any BLINK task name (not just the 6).
+
+    Returns the sufficiency + alpha_sweep blocks for this task.
+    """
+    if not samples:
+        return None
+
+    is_binary = str(samples[0].get("answer", "")).strip().lower() in ("yes", "no")
+    nc = samples[0].get("_n_choices", 4)
+    letters = ALL_LETTERS[:nc]
+    cids = get_choice_token_ids(processor, letters)
+    bids = get_binary_token_ids(processor)
+
+    def get_pred(logits):
+        if is_binary:
+            yn = max((logits[t].item() for t in bids["yes"]), default=-1e9)
+            nn = max((logits[t].item() for t in bids["no"]), default=-1e9)
+            return "yes" if yn > nn else "no"
+        else:
+            cl = {l: logits[cids[l]].item() for l in letters if l in cids}
+            return max(cl, key=cl.get) if cl else "?"
+
+    task_alpha_results = {a: {"correct": 0, "total": 0} for a in sweep_alphas}
+    suf_results = {"vis": {"correct": 0, "total": 0},
+                    "text": {"correct": 0, "total": 0}}
+    baseline_correct = 0
+    total = 0
+    per_sample = []
+
+    for si, sample in enumerate(samples):
+        prompt = sample.get("prompt", sample.get("question", ""))
+        images = (sample.get("images") or
+                  ([sample["image"]] if sample.get("image") else []))
+        if not images:
+            continue
+
+        try:
+            inputs, _ = prepare_inputs(model_name, processor, prompt,
+                                        images, device)
+        except Exception:
+            continue
+        input_ids = inputs.get("input_ids")
+
+        gt = (str(sample.get("answer", "")).strip().lower()
+              if is_binary
+              else parse_mc_answer(str(sample.get("answer", ""))))
+
+        # Baseline forward
+        try:
+            with torch.no_grad():
+                out_n = model(**inputs)
+            logits_n = out_n.logits[0, -1, :].float()
+            del out_n
+        except (torch.cuda.OutOfMemoryError, RuntimeError):
+            torch.cuda.empty_cache()
+            continue
+
+        pred_bl = get_pred(logits_n)
+        bl_correct = (pred_bl == gt)
+        total += 1
+        if bl_correct:
+            baseline_correct += 1
+        sample_preds = {"bl_correct": bl_correct}
+
+        # Visual centroid sufficiency (α_interp=0 on vis tokens at L16)
+        if vis_mfa is not None:
+            def vis_hook_fn(module, inp, output):
+                from centroid_erasure.visual_tokens import find_visual_token_range
+                h = output[0] if isinstance(output, tuple) else output
+                h = h.clone()
+                dtype, dev = h.dtype, h.device
+                sl = h.shape[1]
+                try:
+                    vs, ve = find_visual_token_range(
+                        model_name, input_ids, h, processor)
+                except Exception:
+                    vs, ve = 10, max(int(sl * 0.7), sl - 100)
+                if ve > vs and ve - vs >= 2:
+                    vis_mfa.to_device(dev)
+                    tokens = h[0, vs:ve, :].float()
+                    if tokens.shape[1] == vis_mfa.mu.shape[1]:
+                        replaced = vis_mfa.replace(tokens, 0.0)
+                        h[0, vs:ve, :] = replaced.to(dtype)
+                return (h,) + output[1:] if isinstance(output, tuple) else h
+
+            handle = lm_layers[vis_layer].register_forward_hook(vis_hook_fn)
+            try:
+                with torch.no_grad():
+                    out_v = model(**inputs)
+                pred_vis = get_pred(out_v.logits[0, -1, :].float())
+                del out_v
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pred_vis = pred_bl
+            handle.remove()
+            suf_results["vis"]["total"] += 1
+            if pred_vis == gt:
+                suf_results["vis"]["correct"] += 1
+
+        # Text centroid sufficiency (α_interp=0 on text tokens at L12)
+        if text_mfa is not None:
+            hook = TextCDHook(text_mfa, model_name, processor,
+                              alpha_interp=0.0, segment="all")
+            hook.set_input(input_ids)
+            handle = lm_layers[text_layer].register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    out_t = model(**inputs)
+                pred_text = get_pred(out_t.logits[0, -1, :].float())
+                del out_t
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pred_text = pred_bl
+            handle.remove()
+            suf_results["text"]["total"] += 1
+            if pred_text == gt:
+                suf_results["text"]["correct"] += 1
+
+        # Alpha sweep (text-centroid CD at multiple α_interp)
+        for alpha in sweep_alphas:
+            hook = TextCDHook(text_mfa, model_name, processor,
+                              alpha_interp=alpha, segment="all")
+            hook.set_input(input_ids)
+            handle = lm_layers[text_layer].register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    out_e = model(**inputs)
+                logits_e = out_e.logits[0, -1, :].float()
+                logits_cd = logits_n + alpha_cd * (logits_n - logits_e)
+                pred_cd = get_pred(logits_cd)
+                del out_e
+            except (torch.cuda.OutOfMemoryError, RuntimeError):
+                pred_cd = pred_bl
+            handle.remove()
+            cd_correct = (pred_cd == gt)
+            task_alpha_results[alpha]["total"] += 1
+            if cd_correct:
+                task_alpha_results[alpha]["correct"] += 1
+            sample_preds[f"cd_{alpha}"] = cd_correct
+
+        per_sample.append(sample_preds)
+        del logits_n, inputs
+        if total % 50 == 0:
+            torch.cuda.empty_cache()
+
+    # Compile (mirrors cross_model_sweep_v2 format exactly)
+    bl_acc = baseline_correct / total if total > 0 else 0.0
+    _, bl_lo, bl_hi = wilson_ci(baseline_correct, total)
+
+    alpha_results = {}
+    for alpha in sweep_alphas:
+        ar = task_alpha_results[alpha]
+        cd_acc = ar["correct"] / ar["total"] if ar["total"] > 0 else 0.0
+        alpha_key = f"cd_{alpha}"
+        b = sum(1 for s in per_sample if s["bl_correct"] and not s.get(alpha_key, False))
+        c = sum(1 for s in per_sample if not s["bl_correct"] and s.get(alpha_key, False))
+        n_disc = b + c
+        if n_disc > 0:
+            from scipy.stats import chi2 as chi2_dist
+            mcnemar_chi2 = (c - b) ** 2 / n_disc
+            mcnemar_p = float(chi2_dist.sf(mcnemar_chi2, df=1))
+        else:
+            mcnemar_p = 1.0
+        _, cd_lo, cd_hi = wilson_ci(ar["correct"], ar["total"])
+        alpha_results[str(alpha)] = {
+            "cd_accuracy": round(cd_acc, 4),
+            "cd_ci": [round(cd_lo, 4), round(cd_hi, 4)],
+            "delta": round(cd_acc - bl_acc, 4),
+            "n": ar["total"],
+            "mcnemar_b": b,
+            "mcnemar_c": c,
+            "mcnemar_p": round(mcnemar_p, 4),
+        }
+
+    vis_acc = (suf_results["vis"]["correct"] / suf_results["vis"]["total"]
+               if suf_results["vis"]["total"] > 0 else bl_acc)
+    text_acc = (suf_results["text"]["correct"] / suf_results["text"]["total"]
+                if suf_results["text"]["total"] > 0 else bl_acc)
+
+    best_a = (max(alpha_results.items(), key=lambda x: x[1]["delta"])[0]
+              if alpha_results else str(FIXED_ALPHA_PRIMARY))
+    best_d = (max(v["delta"] for v in alpha_results.values())
+              if alpha_results else 0.0)
+
+    return {
+        "sufficiency": {
+            "baseline": round(bl_acc, 4),
+            "vis_centroid_accuracy": round(vis_acc, 4),
+            "vis_centroid_cost": round(bl_acc - vis_acc, 4),
+            "text_centroid_accuracy": round(text_acc, 4),
+            "text_centroid_cost": round(bl_acc - text_acc, 4),
+            "n": total,
+        },
+        "alpha_sweep": {
+            "baseline": round(bl_acc, 4),
+            "baseline_ci": [round(bl_lo, 4), round(bl_hi, 4)],
+            "n": total,
+            "alphas": alpha_results,
+            "best_alpha": best_a,
+            "best_delta": round(best_d, 4),
+        },
+        "in_paper_v1": task_name in TASKS_IN_PAPER,
+    }
+
+
+def run_model(model_key, tasks, phase2_dir, out_dir, alpha_cd, sweep_alphas,
+               resume=True, max_per_task=None, output_suffix="all14"):
+    """Run all requested tasks for one model. Writes incremental JSON."""
+    out_path = Path(out_dir) / f"{model_key}_{output_suffix}.json"
+
+    # Resume: if output exists, skip finished tasks
+    existing = {}
+    if resume and out_path.exists():
+        try:
+            with open(out_path) as f:
+                existing = json.load(f)
+            print(f"  Resuming from {out_path}; "
+                  f"{len(existing.get('tasks', {}))} tasks already done.")
+        except Exception:
+            existing = {}
+
+    tasks_done = set(existing.get("tasks", {}).keys())
+    tasks_todo = [t for t in tasks if t not in tasks_done]
+    if not tasks_todo:
+        print(f"  All {len(tasks)} tasks already done for {model_key}.")
+        return out_path
+
+    print(f"\n{'='*60}\n[{model_key}] {len(tasks_todo)}/{len(tasks)} tasks to run\n{'='*60}")
+    print(f"  Loading model {model_key}...")
+    cfg = get_config(model_key)
+    model, processor, _ = load_model(model_key)
+    device = next(model.parameters()).device
+    lm_layers = find_lm_layers(model, cfg)
+    n_layers = len(lm_layers)
+    vis_layer = VIS_LAYER_DEFAULT if n_layers > VIS_LAYER_DEFAULT else n_layers // 2
+    text_layer = TEXT_LAYER if n_layers > TEXT_LAYER else max(1, int(n_layers * 0.4))
+    print(f"  Layers: {n_layers} total (vis L{vis_layer}, text L{text_layer})")
+
+    text_mfa, vis_mfa = load_phase2_centroids(phase2_dir, model_key)
+
+    # Load ALL requested tasks in a single BLINK call (batched loader is faster)
+    print(f"  Loading {len(tasks_todo)} BLINK tasks"
+          f"{' (capped at ' + str(max_per_task) + ' samples/task)' if max_per_task else ''}...")
+    samples_by_task = load_blink(tasks=tasks_todo, split="val",
+                                  max_per_task=max_per_task)
+
+    results = existing if existing else {
+        "model": model_key,
+        "protocol": {
+            "alpha_cd": alpha_cd,
+            "sweep_alphas": sweep_alphas,
+            "K": 256,
+            "N_coco": 2000,
+            "text_layer": text_layer,
+            "vis_layer": vis_layer,
+            "centroid_source": str(phase2_dir),
+        },
+        "tasks": {},
+    }
+
+    for ti, task in enumerate(tasks_todo):
+        samples = samples_by_task.get(task, [])
+        if not samples:
+            print(f"  [{ti+1}/{len(tasks_todo)}] {task}: 0 samples — SKIP")
+            continue
+        t0 = time.time()
+        try:
+            task_res = evaluate_one_task(
+                model, processor, model_key, samples, task,
+                text_mfa, vis_mfa, lm_layers, device,
+                alpha_cd=alpha_cd, sweep_alphas=sweep_alphas,
+                vis_layer=vis_layer, text_layer=text_layer,
+            )
+        except Exception as e:
+            print(f"  [{ti+1}/{len(tasks_todo)}] {task}: FAILED ({e})")
+            continue
+
+        if task_res is None:
+            continue
+        results["tasks"][task] = task_res
+
+        # Incremental save after each task (resume-safe)
+        with open(out_path, "w") as f:
+            json.dump(results, f, indent=2, default=numpy_safe)
+
+        elapsed = time.time() - t0
+        suf = task_res["sufficiency"]
+        asw = task_res["alpha_sweep"]
+        fa = asw["alphas"].get(str(FIXED_ALPHA_PRIMARY), {})
+        in_paper = "*" if task in TASKS_IN_PAPER else " "
+        print(f"  [{ti+1}/{len(tasks_todo)}]{in_paper} {task:28s} "
+              f"bl={suf['baseline']:.3f} "
+              f"text_cost={suf['text_centroid_cost']:+.3f} "
+              f"Δ@α=0.4={fa.get('delta', 0.0):+.4f} "
+              f"best_α={asw['best_alpha']} best_Δ={asw['best_delta']:+.4f} "
+              f"[{elapsed:.0f}s, n={suf['n']}]", flush=True)
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    # Final save
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2, default=numpy_safe)
+
+    del model, processor
+    gc.collect()
+    torch.cuda.empty_cache()
+    return out_path
+
+
+def compare_vs_paper(out_paths, phase2_dir):
+    """Print summary comparing Phase 2 (6-task) numbers vs this run's 6-task
+    recompute, then show the 8 excluded tasks separately."""
+    phase2_dir = Path(phase2_dir)
+    print(f"\n{'='*60}\nSummary vs Phase 2 (paper v1)\n{'='*60}")
+    for path in out_paths:
+        if not Path(path).exists():
+            continue
+        with open(path) as f:
+            data = json.load(f)
+        model = data["model"]
+        phase2_path = phase2_dir / f"{model}_sweep.json"
+        phase2 = {}
+        if phase2_path.exists():
+            with open(phase2_path) as f:
+                phase2 = json.load(f)
+
+        print(f"\n[{model}]")
+        print(f"  {'Task':28s} {'bl':>7s} {'paper Δ@0.4':>12s} {'this Δ@0.4':>12s} "
+              f"{'best α*':>8s} {'best Δ':>8s} {'text cost':>10s}")
+
+        # In-paper 6 tasks (sanity check against Phase 2)
+        paper_deltas, paper_p2 = [], []
+        for task in TASKS_IN_PAPER:
+            if task not in data.get("tasks", {}):
+                continue
+            t = data["tasks"][task]
+            fa = t["alpha_sweep"]["alphas"].get(str(FIXED_ALPHA_PRIMARY), {})
+            p2_fa = (phase2.get("alpha_sweep", {}).get(task, {})
+                     .get("alphas", {}).get(str(FIXED_ALPHA_PRIMARY), {}))
+            paper_deltas.append(fa.get("delta", 0.0))
+            paper_p2.append(p2_fa.get("delta", 0.0))
+            print(f"  * {task:26s} {t['sufficiency']['baseline']:>6.3f} "
+                  f"{p2_fa.get('delta', 0.0):>+11.4f} "
+                  f"{fa.get('delta', 0.0):>+11.4f} "
+                  f"{t['alpha_sweep']['best_alpha']:>8s} "
+                  f"{t['alpha_sweep']['best_delta']:>+7.4f} "
+                  f"{t['sufficiency']['text_centroid_cost']:>+9.4f}")
+
+        # 8 newly-added tasks (this is the new information)
+        print(f"  {'-'*96}")
+        new_deltas = []
+        for task in TASKS_EXCLUDED_BY_PAPER:
+            if task not in data.get("tasks", {}):
+                continue
+            t = data["tasks"][task]
+            fa = t["alpha_sweep"]["alphas"].get(str(FIXED_ALPHA_PRIMARY), {})
+            new_deltas.append(fa.get("delta", 0.0))
+            print(f"    {task:26s} {t['sufficiency']['baseline']:>6.3f} "
+                  f"{'---':>12s} "
+                  f"{fa.get('delta', 0.0):>+11.4f} "
+                  f"{t['alpha_sweep']['best_alpha']:>8s} "
+                  f"{t['alpha_sweep']['best_delta']:>+7.4f} "
+                  f"{t['sufficiency']['text_centroid_cost']:>+9.4f}")
+
+        if paper_deltas:
+            diffs = [a - b for a, b in zip(paper_deltas, paper_p2)]
+            print(f"  In-paper 6-task mean (this run): {np.mean(paper_deltas)*100:+.2f}% "
+                  f"(Phase 2: {np.mean(paper_p2)*100:+.2f}%, drift: "
+                  f"{np.mean(diffs)*100:+.2f}%)")
+        if new_deltas:
+            n_pos = sum(1 for d in new_deltas if d > 0.02)
+            n_neg = sum(1 for d in new_deltas if d < -0.02)
+            print(f"  Excluded 8-task mean @ α=0.4: {np.mean(new_deltas)*100:+.2f}%  "
+                  f"({n_pos}/8 ≥+2pp, {n_neg}/8 ≤-2pp, rest near null)")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--models", type=str, default=",".join(DEFAULT_MODELS),
+                        help=f"Comma-separated model keys (default: {DEFAULT_MODELS})")
+    parser.add_argument("--tasks", type=str, default="all",
+                        choices=["all", "excluded", "in_paper"],
+                        help="Task subset: all 14, just the 8 excluded, or just the 6 in paper")
+    parser.add_argument("--alphas", type=str, default=None,
+                        help="Comma-separated α_interp values (default: full sweep)")
+    parser.add_argument("--alpha_cd", type=float, default=DEFAULT_ALPHA_CD)
+    parser.add_argument("--phase2_dir", type=str, default=PHASE2_DIR_DEFAULT,
+                        help="Phase 2 directory with existing centroids")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Output dir (default: results/all14_blink_<timestamp>)")
+    parser.add_argument("--resume_from", type=str, default=None,
+                        help="Resume a previous run by passing its output_dir")
+    parser.add_argument("--sanity", action="store_true",
+                        help="Lightweight regression check: 1 model (qwen), "
+                             "1 task (Forensic_Detection), max 30 samples, "
+                             "α_interp=0.4 only. ~2-3 min total. Compares against "
+                             "Phase 2 Qwen2.5-VL-7B Forensic baseline=47.7%% / Δ=+7.6%% at α=0.4.")
+    parser.add_argument("--max_per_task", type=int, default=None,
+                        help="Cap samples per task (for debugging; default: all)")
+    args = parser.parse_args()
+
+    # Sanity mode: override args for a fast regression check
+    if args.sanity:
+        args.models = "qwen"
+        args.tasks = "in_paper"   # will be further filtered to just Forensic below
+        args.alphas = "0.4"
+        args.max_per_task = 30
+        print("[SANITY MODE] qwen × Forensic_Detection × 30 samples × α=0.4 only\n"
+              "              Expected ~2-3 min. Baseline should be ≈47.7% and\n"
+              "              Δ@α=0.4 should be ≈+7.6% (Phase 2 Qwen2.5-VL-7B reference).\n"
+              "              Large deviations indicate a protocol break.\n")
+
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+
+    if args.tasks == "all":
+        tasks = TASKS_IN_PAPER + TASKS_EXCLUDED_BY_PAPER
+    elif args.tasks == "excluded":
+        tasks = TASKS_EXCLUDED_BY_PAPER
+    else:
+        tasks = TASKS_IN_PAPER
+    # Sanity mode: narrow to just Forensic_Detection
+    if args.sanity:
+        tasks = ["Forensic_Detection"]
+    # Sanity: every task must be one of BLINK's 14
+    for t in tasks:
+        assert t in BLINK_ALL_TASKS, f"Unknown BLINK task key: {t}"
+
+    sweep_alphas = ([float(a.strip()) for a in args.alphas.split(",") if a.strip()]
+                    if args.alphas else DEFAULT_SWEEP_ALPHAS)
+    # Ensure fixed-α primary is always present
+    if FIXED_ALPHA_PRIMARY not in sweep_alphas:
+        sweep_alphas = sorted(sweep_alphas + [FIXED_ALPHA_PRIMARY])
+
+    repo_root = Path(__file__).resolve().parent.parent
+    phase2_dir = (repo_root / args.phase2_dir
+                  if not Path(args.phase2_dir).is_absolute()
+                  else Path(args.phase2_dir))
+    assert phase2_dir.exists(), f"Phase 2 dir not found: {phase2_dir}"
+
+    if args.resume_from:
+        out_dir = Path(args.resume_from)
+        assert out_dir.exists(), f"--resume_from dir not found: {out_dir}"
+    elif args.output_dir:
+        out_dir = Path(args.output_dir)
+    else:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = "all14_blink_sanity" if args.sanity else "all14_blink"
+        out_dir = repo_root / "results" / f"{stem}_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Output:      {out_dir}")
+    print(f"Models:      {models}")
+    print(f"Tasks:       {args.tasks} ({len(tasks)} total)")
+    print(f"α_interp:    {sweep_alphas}")
+    print(f"α_cd:        {args.alpha_cd}")
+    print(f"Centroids:   {phase2_dir}")
+
+    # Persist config for audit trail
+    config = {
+        "timestamp": datetime.now().isoformat(),
+        "models": models,
+        "tasks_requested": args.tasks,
+        "tasks": tasks,
+        "sweep_alphas": sweep_alphas,
+        "alpha_cd": args.alpha_cd,
+        "phase2_dir": str(phase2_dir),
+        "fixed_alpha_primary": FIXED_ALPHA_PRIMARY,
+    }
+    with open(out_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2, default=numpy_safe)
+
+    out_paths = []
+    suffix = "sanity" if args.sanity else "all14"
+    for model_key in models:
+        try:
+            p = run_model(
+                model_key, tasks, phase2_dir, out_dir,
+                alpha_cd=args.alpha_cd, sweep_alphas=sweep_alphas,
+                max_per_task=args.max_per_task, output_suffix=suffix,
+            )
+            out_paths.append(p)
+        except Exception as e:
+            print(f"\n[{model_key}] FATAL: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+
+    if args.sanity:
+        # Print a dedicated sanity verdict
+        print(f"\n{'='*60}\nSANITY MODE VERDICT\n{'='*60}")
+        for p in out_paths:
+            if not Path(p).exists():
+                continue
+            with open(p) as f:
+                d = json.load(f)
+            t = d.get("tasks", {}).get("Forensic_Detection")
+            if not t:
+                print(f"  {p}: Forensic_Detection missing from output")
+                continue
+            bl = t["sufficiency"]["baseline"]
+            fa = t["alpha_sweep"]["alphas"].get("0.4", {})
+            delta = fa.get("delta", 0.0)
+            n = t["sufficiency"]["n"]
+            # Expected values from Phase 2 Qwen2.5-VL-7B (full n=132)
+            ref_bl, ref_delta = 0.477, 0.076
+            bl_ok = abs(bl - ref_bl) < 0.10
+            delta_ok = abs(delta - ref_delta) < 0.10
+            def tag(ok): return "✓" if ok else "✗ DRIFT"
+            print(f"  {d['model']}: baseline={bl:.3f} (Phase 2: {ref_bl:.3f}) {tag(bl_ok)}  "
+                  f"Δ@0.4={delta:+.4f} (Phase 2: {ref_delta:+.4f}) {tag(delta_ok)}  "
+                  f"n={n} (capped; Phase 2 n=132)")
+            if bl_ok and delta_ok:
+                print(f"  → Protocol OK. Safe to launch full run.")
+            else:
+                print(f"  → DRIFT detected. Do NOT launch full run until investigated.")
+    else:
+        compare_vs_paper(out_paths, phase2_dir)
+    print(f"\nAll done. Outputs: {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

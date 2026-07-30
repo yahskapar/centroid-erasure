@@ -1,0 +1,22 @@
+{
+  "baseline_accuracy": 0.7654584221748401,
+  "baseline_correct": 718,
+  "delta": 0.024520255863539446,
+  "excluded_three_rotation_bases": 53,
+  "legacy_custom_four_way": {
+    "delta": 0.028254288597376387,
+    "n": 991,
+    "reason": "the custom fourth rotation moved label-referential fixed options for 53 bases",
+    "status": "superseded"
+  },
+  "mcnemar_b": 6,
+  "mcnemar_c": 29,
+  "mcnemar_exact_two_sided_p": 0.0001168418675661087,
+  "n": 938,
+  "omission_reason": "aggregate discordance counts suffice for the exact paired test; dataset answers are not redistributed",
+  "paired_predictions_released": false,
+  "protocol": "strict CircularEval on base questions having all four canonical dataset rotations",
+  "status": "retained_corrected",
+  "tccd_accuracy": 0.7899786780383795,
+  "tccd_correct": 741
+}

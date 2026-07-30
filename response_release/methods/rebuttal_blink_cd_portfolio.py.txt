@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse, json, sys, time, warnings, collections
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+import torch
+from scipy.stats import binomtest
+from PIL import Image
+
+warnings.filterwarnings("ignore")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import get_config, load_model, find_lm_layers, prepare_inputs  # noqa
+from centroid_erasure.eval_mcqa import get_choice_token_ids  # noqa
+from centroid_erasure.data.utils import parse_mc_answer  # noqa
+from protocol_snapshot.latent_factor_cd import ALL_LETTERS  # noqa
+from pipeline.paper_sweep import KMeansCentroids, TextCDHook  # noqa
+
+MODEL_KEY = "qwen"
+TEXT_LAYER = 12
+ALPHA_INTERP = 0.4
+ALPHA_CD = 1.0
+DOLA_HIGH_LAYER = 18
+PHASE2_CENTROID = REPO_ROOT / "results" / "cross_model_v2_20260407_144343" / "qwen_centroids.npz"
+PLACEHOLDER_IMG = Image.new("RGB", (224, 224), color=(0, 0, 0))
+TASK_ORDER = ["Forensic_Detection", "Visual_Similarity", "Art_Style",
+              "Counting", "Relative_Depth", "Spatial_Relation"]
+
+
+def add_gaussian_noise(img, sigma=0.25):
+    arr = np.asarray(img).astype(np.float32) / 255.0
+    arr = np.clip(arr + np.random.normal(0, sigma, arr.shape), 0, 1)
+    return Image.fromarray((arr * 255).astype(np.uint8))
+
+
+class DoLaLayerHook:
+    def __init__(self): self.captured = None
+    def __call__(self, module, inp, out):
+        self.captured = (out[0] if isinstance(out, tuple) else out).detach()
+
+
+def load_blink_samples(cap_per_task=None, log=print):
+    from centroid_erasure.data.blink import load_blink
+    log("  Loading BLINK 6 tasks (val)...")
+    blink = load_blink(tasks=list(TASK_ORDER), split="val")
+    samples = []
+    for task in TASK_ORDER:
+        ts = blink.get(task, []) or []
+        if cap_per_task:
+            ts = ts[:cap_per_task]
+        for s in ts:
+            s["_task"] = task
+            samples.append(s)
+    log(f"  BLINK: {len(samples)} samples across {len(TASK_ORDER)} tasks")
+    return samples
+
+
+def letter_pred_and_margin(logits, cids, letters):
+    """Return (argmax letter, top1-top2 margin) over the letter-restricted logits."""
+    vals = {L: logits[cids[L]].item() for L in letters if L in cids}
+    if not vals:
+        return "?", 0.0
+    order = sorted(vals.values(), reverse=True)
+    margin = order[0] - order[1] if len(order) > 1 else order[0]
+    return max(vals, key=vals.get), margin
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true")
+    ap.add_argument("--cap_per_task", type=int, default=None)
+    ap.add_argument("--methods", nargs="+", default=["tccd", "lcd", "vcd", "dola"])
+    args = ap.parse_args()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_blink_cd_portfolio_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lf = open(out_dir / "log.txt", "a", buffering=1)
+    def log(m):
+        print(m); lf.write(m + "\n")
+
+    log(f"=== rebuttal_blink_cd_portfolio ({ts}) ===  L_text={TEXT_LAYER} alpha_interp={ALPHA_INTERP}")
+    cfg = get_config(MODEL_KEY)
+    model, processor, _ = load_model(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    text_mfa = KMeansCentroids(np.load(PHASE2_CENTROID)["text_centroids"])
+    device = next(model.parameters()).device
+    log(f"Loaded {MODEL_KEY}; centroids OK; {len(lm_layers)} LLM layers")
+
+    lm_head = None
+    try:
+        lm_head = model.get_output_embeddings()
+    except Exception:
+        for name, mod in model.named_modules():
+            if name.endswith("lm_head"): lm_head = mod; break
+
+    cap = 8 if args.sanity else args.cap_per_task
+    samples = load_blink_samples(cap_per_task=cap, log=log)
+    if not samples: sys.exit(1)
+
+    np.random.seed(42)
+    per_sample, t0 = [], time.time()
+
+    for si, sample in enumerate(samples):
+        prompt = sample.get("prompt", sample.get("question", ""))
+        images = sample.get("images") or ([sample["image"]] if sample.get("image") else [])
+        if not images:
+            continue
+        nc = sample.get("_n_choices", 4)
+        letters = ALL_LETTERS[:nc]
+        cids = get_choice_token_ids(processor, letters)
+        gt = parse_mc_answer(str(sample.get("answer", "")))
+        try:
+            inputs, _ = prepare_inputs(MODEL_KEY, processor, prompt, images, device)
+        except Exception:
+            continue
+        input_ids = inputs["input_ids"]
+        with torch.no_grad():
+            logits_n = model(**inputs).logits[0, -1, :].float()
+        pred_bl, margin_bl = letter_pred_and_margin(logits_n, cids, letters)
+        bl_ok = (pred_bl == gt)
+        rec = {"task": sample["_task"], "gt": gt, "pred_bl": pred_bl,
+               "bl_correct": bl_ok, "margin_bl": margin_bl}
+
+        # TCCD (L12 text-centroid CD)
+        if "tccd" in args.methods:
+            hook = TextCDHook(text_mfa, MODEL_KEY, processor, alpha_interp=ALPHA_INTERP, segment="all")
+            hook.set_input(input_ids)
+            h = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    logits_e = model(**inputs).logits[0, -1, :].float()
+                logits_cd = logits_n + ALPHA_CD * (logits_n - logits_e)
+                pred, margin = letter_pred_and_margin(logits_cd, cids, letters)
+            finally:
+                h.remove()
+            rec["pred_tccd"], rec["margin_tccd"] = pred, margin
+
+        # LCD (black-placeholder image as text-dominant reference)
+        if "lcd" in args.methods:
+            try:
+                inp_lcd, _ = prepare_inputs(MODEL_KEY, processor, prompt, [PLACEHOLDER_IMG], device)
+                with torch.no_grad():
+                    logits_t = model(**inp_lcd).logits[0, -1, :].float()
+                logits_cd = logits_n + ALPHA_CD * (logits_n - logits_t)
+                pred, margin = letter_pred_and_margin(logits_cd, cids, letters)
+            except Exception:
+                pred, margin = pred_bl, margin_bl
+            rec["pred_lcd"], rec["margin_lcd"] = pred, margin
+
+        # VCD (noised image)
+        if "vcd" in args.methods:
+            try:
+                noisy = add_gaussian_noise(images[0])
+                inp_vcd, _ = prepare_inputs(MODEL_KEY, processor, prompt, [noisy], device)
+                with torch.no_grad():
+                    logits_v = model(**inp_vcd).logits[0, -1, :].float()
+                logits_cd = logits_n + ALPHA_CD * (logits_n - logits_v)
+                pred, _ = letter_pred_and_margin(logits_cd, cids, letters)
+            except Exception:
+                pred = pred_bl
+            rec["pred_vcd"] = pred
+
+        # DoLa (early-layer contrast)
+        if "dola" in args.methods and lm_head is not None and DOLA_HIGH_LAYER < len(lm_layers):
+            try:
+                dh = DoLaLayerHook()
+                h = lm_layers[DOLA_HIGH_LAYER].register_forward_hook(dh)
+                with torch.no_grad():
+                    model(**inputs)
+                h.remove()
+                h_early = dh.captured[0, -1, :].float()
+                with torch.no_grad():
+                    logits_early = lm_head(h_early.to(model.dtype)).float()
+                logits_cd = logits_n + ALPHA_CD * (logits_n - logits_early)
+                pred, _ = letter_pred_and_margin(logits_cd, cids, letters)
+            except Exception:
+                pred = pred_bl
+            rec["pred_dola"] = pred
+
+        per_sample.append(rec)
+        if (si + 1) % 50 == 0:
+            n = len(per_sample)
+            acc = {m: sum(r.get(f"pred_{m}") == r["gt"] for r in per_sample) / n
+                   for m in ["bl"] + args.methods}
+            log(f"  [{si+1}/{len(samples)}] " + " ".join(f"{m}={acc[m]:.3f}" for m in acc)
+                + f"  ({(time.time()-t0)/60:.1f}m)")
+            torch.cuda.empty_cache()
+
+    with open(out_dir / "per_sample.jsonl", "w") as f:
+        for r in per_sample:
+            f.write(json.dumps(r) + "\n")
+
+    # ── analysis ──
+    n = max(1, len(per_sample))
+    def C(m, r): return r.get(f"pred_{m}") == r["gt"]
+    acc = {m: sum(C(m, r) for r in per_sample) / n for m in ["bl"] + args.methods}
+
+    def mcnemar(m):
+        b = sum(r["bl_correct"] and not C(m, r) for r in per_sample)
+        c = sum(not r["bl_correct"] and C(m, r) for r in per_sample)
+        p = binomtest(min(b, c), b + c, 0.5).pvalue if (b + c) > 0 else 1.0
+        return {"acc": acc[m], "delta": acc[m] - acc["bl"], "b": b, "c": c, "mcnemar_p": p}
+
+    summary = {"n": n, "baseline": acc["bl"], "methods": {m: mcnemar(m) for m in args.methods}}
+
+    # complementarity TCCD vs LCD
+    if "tccd" in args.methods and "lcd" in args.methods:
+        tccd_only = sum(C("tccd", r) and not C("lcd", r) for r in per_sample)
+        lcd_only = sum(C("lcd", r) and not C("tccd", r) for r in per_sample)
+        union = sum(C("tccd", r) or C("lcd", r) for r in per_sample) / n
+        best_single = max(acc["tccd"], acc["lcd"])
+        # confidence router over {bl, tccd, lcd}: pick the candidate with max margin
+        def route_conf(r):
+            cands = [("bl", r["pred_bl"], r.get("margin_bl", 0.0)),
+                     ("tccd", r.get("pred_tccd", r["pred_bl"]), r.get("margin_tccd", 0.0)),
+                     ("lcd", r.get("pred_lcd", r["pred_bl"]), r.get("margin_lcd", 0.0))]
+            return max(cands, key=lambda x: x[2])[1]
+        def route_majority(r):
+            votes = [r["pred_bl"], r.get("pred_tccd", r["pred_bl"]), r.get("pred_lcd", r["pred_bl"])]
+            cnt = collections.Counter(votes)
+            return max(cnt.items(), key=lambda kv: (kv[1], kv[0] == r["pred_bl"]))[0]
+        router_conf = sum(route_conf(r) == r["gt"] for r in per_sample) / n
+        router_maj = sum(route_majority(r) == r["gt"] for r in per_sample) / n
+        summary["complementarity"] = {
+            "tccd_fixes_lcd_misses": tccd_only, "lcd_fixes_tccd_misses": lcd_only,
+            "oracle_union": union, "best_single": best_single,
+            "oracle_headroom_over_best": union - best_single,
+            "router_confidence": router_conf, "router_majority": router_maj,
+            "router_capture_frac": ((router_conf - best_single) / (union - best_single)
+                                    if union - best_single > 1e-9 else 0.0),
+        }
+
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    with open(out_dir / "readout.txt", "w") as f:
+        f.write(f"BLINK CD portfolio + complementarity ({ts})  n={n}\n\n")
+        f.write(f"baseline {acc['bl']:.4f}\n")
+        for m in args.methods:
+            r = summary["methods"][m]
+            f.write(f"  {m:<6s} acc={r['acc']:.4f} Δ={r['delta']:+.4f} p={r['mcnemar_p']:.4f} (b={r['b']} c={r['c']})\n")
+        if "complementarity" in summary:
+            c = summary["complementarity"]
+            f.write(f"\ncomplementarity TCCD vs LCD:\n")
+            f.write(f"  TCCD fixes {c['tccd_fixes_lcd_misses']} that LCD misses; "
+                    f"LCD fixes {c['lcd_fixes_tccd_misses']} that TCCD misses\n")
+            f.write(f"  oracle-union {c['oracle_union']:.4f} vs best-single {c['best_single']:.4f} "
+                    f"= +{c['oracle_headroom_over_best']:.4f} headroom\n")
+            f.write(f"  router(confidence) {c['router_confidence']:.4f}  "
+                    f"router(majority) {c['router_majority']:.4f}  "
+                    f"capture {c['router_capture_frac']:.1%} of headroom\n")
+    log("\nDone. " + json.dumps(summary.get("complementarity", {}), indent=0))
+    lf.close()
+
+
+if __name__ == "__main__":
+    main()

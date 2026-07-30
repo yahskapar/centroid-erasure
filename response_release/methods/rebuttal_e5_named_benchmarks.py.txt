@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Akshay Paruchuri
+# NON-EXECUTABLE PROTOCOL SNAPSHOT. This file contains no run outputs.
+
+import argparse
+import gc
+import json
+import sys
+import time
+import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+warnings.filterwarnings("ignore")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from centroid_erasure.models import (  # noqa: E402
+    get_config, load_model, find_lm_layers, prepare_inputs,
+)
+from centroid_erasure.data.utils import parse_mc_answer, concat_images_horizontal  # noqa: E402
+from pipeline.paper_sweep import (  # noqa: E402
+    KMeansCentroids, TextCDHook,
+)
+
+MODEL_KEY = "qwen"
+TEXT_LAYER = 12
+ALPHA_INTERP = 0.4
+ALPHA_CD = 1.0
+LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]  # MMMU has up to 10 options
+PHASE2_CENTROID = (
+    REPO_ROOT / "results" / "cross_model_v2_20260407_144343" / "qwen_centroids.npz"
+)
+
+# Subjects for MMMU (30); if lmms-lab mirror works it's a single-call shortcut.
+MMMU_SUBJECTS = [
+    "Accounting", "Agriculture", "Architecture_and_Engineering", "Art", "Art_Theory",
+    "Basic_Medical_Science", "Biology", "Chemistry", "Clinical_Medicine",
+    "Computer_Science", "Design", "Diagnostics_and_Laboratory_Medicine",
+    "Economics", "Electronics", "Energy_and_Power", "Finance", "Geography",
+    "History", "Literature", "Manage", "Marketing", "Materials", "Math",
+    "Mechanical_Engineering", "Music", "Pharmacy", "Physics", "Psychology",
+    "Public_Health", "Sociology",
+]
+
+
+# ── Adapters: return [{prompt, images, answer}] in pipeline format ──
+
+def _load_mmmu(split="validation", cap=None, log=print):
+    from datasets import load_dataset, concatenate_datasets
+    log(f"  MMMU: loading 30 subjects ({split})...")
+    parts = []
+    for subj in MMMU_SUBJECTS:
+        try:
+            d = load_dataset("MMMU/MMMU", subj, split=split)
+            parts.append(d)
+        except Exception as e:
+            log(f"    ⚠ {subj}: {e}")
+    if not parts:
+        return []
+    ds = concatenate_datasets(parts).filter(
+        lambda r: r["question_type"] == "multiple-choice")
+    log(f"  MMMU: {len(ds)} MCQA items")
+    samples = []
+    for row in ds:
+        imgs = [row.get(f"image_{i}") for i in range(1, 8)]
+        imgs = [im.convert("RGB") for im in imgs if im is not None]
+        if not imgs:
+            continue
+        try:
+            options = row["options"]
+            # MMMU options may be a JSON string list
+            if isinstance(options, str):
+                import ast
+                options = ast.literal_eval(options)
+        except Exception:
+            continue
+        if not options or len(options) < 2 or len(options) > len(LETTERS):
+            continue
+        opt_str = "\n".join(
+            f"({LETTERS[i]}) {o}" for i, o in enumerate(options))
+        prompt = (
+            f"{row['question']}\n\n"
+            f"Select from the following choices.\n"
+            f"{opt_str}"
+        )
+        ans = row["answer"]
+        if isinstance(ans, str) and ans.strip().upper() in LETTERS:
+            ans_letter = ans.strip().upper()
+        else:
+            continue
+        samples.append({
+            "prompt": prompt,
+            "images": imgs,
+            "answer": ans_letter,
+            "idx": row.get("id", ""),
+            "n_options": len(options),
+        })
+        if cap and len(samples) >= cap:
+            break
+    return samples
+
+
+def _load_mmbench(split="dev", cap=None, log=print):
+    from datasets import load_dataset
+    log(f"  MMBench: loading lmms-lab/MMBench_EN ({split})...")
+    try:
+        ds = load_dataset("lmms-lab/MMBench_EN", split=split)
+    except Exception:
+        # Fallback to OpenGVLab/MMBench format
+        try:
+            ds = load_dataset("OpenGVLab/MMBench", split=split)
+        except Exception as e:
+            log(f"  ⚠ MMBench load failed: {e}")
+            return []
+    log(f"  MMBench: {len(ds)} items")
+    samples = []
+    for row in ds:
+        # Collect non-empty options
+        opts = []
+        for L in ["A", "B", "C", "D"]:
+            v = row.get(L)
+            if v is not None and str(v).strip() and str(v).lower() != "nan":
+                opts.append((L, str(v).strip()))
+        if len(opts) < 2:
+            continue
+        opt_str = "\n".join(f"({L}) {v}" for L, v in opts)
+        hint = row.get("hint")
+        hint_str = f"{hint}\n" if hint and str(hint).strip() and str(hint).lower() != "nan" else ""
+        prompt = (
+            f"{hint_str}{row['question']}\n\n"
+            f"Select from the following choices.\n"
+            f"{opt_str}"
+        )
+        img = row.get("image")
+        if img is None:
+            continue
+        img = img.convert("RGB") if hasattr(img, "convert") else img
+        ans = str(row.get("answer", "")).strip().upper()
+        if ans not in [L for L, _ in opts]:
+            continue
+        samples.append({
+            "prompt": prompt,
+            "images": [img],
+            "answer": ans,
+            "idx": row.get("index", ""),
+            "n_options": len(opts),
+            "category": row.get("category"),
+            "l2_category": row.get("l2-category"),
+        })
+        if cap and len(samples) >= cap:
+            break
+    return samples
+
+
+def _load_mathvista(split="testmini", cap=None, log=print):
+    from datasets import load_dataset
+    log(f"  MathVista: loading AI4Math/MathVista ({split})...")
+    try:
+        ds = load_dataset("AI4Math/MathVista", split=split)
+    except Exception as e:
+        log(f"  ⚠ MathVista load failed: {e}")
+        return []
+    ds = ds.filter(lambda r: r.get("question_type") == "multi_choice")
+    log(f"  MathVista: {len(ds)} multi_choice items")
+    samples = []
+    for row in ds:
+        choices = row.get("choices")
+        if isinstance(choices, str):
+            try:
+                import ast
+                choices = ast.literal_eval(choices)
+            except Exception:
+                choices = None
+        if not choices or len(choices) < 2 or len(choices) > len(LETTERS):
+            continue
+        opt_str = "\n".join(
+            f"({LETTERS[i]}) {c}" for i, c in enumerate(choices))
+        prompt = (
+            f"{row['question']}\n\n"
+            f"Select from the following choices.\n"
+            f"{opt_str}"
+        )
+        ans_value = row.get("answer")
+        try:
+            ans_idx = choices.index(ans_value)
+        except (ValueError, AttributeError):
+            continue
+        ans_letter = LETTERS[ans_idx]
+        img = row.get("decoded_image")
+        if img is None:
+            continue
+        img = img.convert("RGB") if hasattr(img, "convert") else img
+        samples.append({
+            "prompt": prompt,
+            "images": [img],
+            "answer": ans_letter,
+            "idx": row.get("pid", ""),
+            "n_options": len(choices),
+        })
+        if cap and len(samples) >= cap:
+            break
+    return samples
+
+
+LOADERS = {
+    "mmmu": _load_mmmu,
+    "mmbench": _load_mmbench,
+    "mathvista": _load_mathvista,
+}
+
+
+# ── Evaluation: baseline + TCCD on a sample list ──
+
+def get_letter_token_ids(processor, n_options):
+    """Return token IDs for the first n_options letters (A..F)."""
+    return {
+        L: processor.tokenizer.encode(f" {L}", add_special_tokens=False)[0]
+        for L in LETTERS[:n_options]
+    }
+
+
+def get_pred(logits, letter_token_ids):
+    pairs = [(L, logits[tid].item()) for L, tid in letter_token_ids.items()]
+    pairs.sort(key=lambda x: -x[1])
+    return pairs[0][0]
+
+
+def evaluate_benchmark(model, processor, lm_layers, bench_name, samples,
+                       text_mfa, out_jsonl, log):
+    device = next(model.parameters()).device
+
+    bl_correct = cd_correct = total = err = 0
+    per_sample = []
+
+    for s_idx, sample in enumerate(samples):
+        # prepare_inputs handles multi-image concat internally
+        try:
+            inputs, _ = prepare_inputs(
+                MODEL_KEY, processor, sample["prompt"], sample["images"], device,
+            )
+        except Exception as e:
+            err += 1
+            continue
+        input_ids = inputs["input_ids"]
+
+        letter_ids = get_letter_token_ids(processor, sample.get("n_options", 4))
+
+        with torch.no_grad():
+            out_n = model(**inputs)
+        logits_n = out_n.logits[0, -1, :].float()
+        pred_bl = get_pred(logits_n, letter_ids)
+
+        hook = TextCDHook(text_mfa, MODEL_KEY, processor,
+                          alpha_interp=ALPHA_INTERP, segment="all")
+        hook.set_input(input_ids)
+        handle = lm_layers[TEXT_LAYER].register_forward_hook(hook)
+        try:
+            with torch.no_grad():
+                out_e = model(**inputs)
+            logits_e = out_e.logits[0, -1, :].float()
+            logits_cd = logits_n + ALPHA_CD * (logits_n - logits_e)
+            pred_cd = get_pred(logits_cd, letter_ids)
+        finally:
+            handle.remove()
+
+        gt = sample["answer"]
+        bl_ok = (pred_bl == gt)
+        cd_ok = (pred_cd == gt)
+        total += 1
+        bl_correct += int(bl_ok)
+        cd_correct += int(cd_ok)
+        per_sample.append({
+            "idx": sample["idx"], "gt": gt,
+            "pred_bl": pred_bl, "pred_cd": pred_cd,
+            "bl_correct": bl_ok, "cd_correct": cd_ok,
+            "n_options": sample.get("n_options"),
+            "category": sample.get("category"),
+            "l2_category": sample.get("l2_category"),
+        })
+        del out_n, out_e, logits_n, logits_e, logits_cd
+        if total % 25 == 0:
+            torch.cuda.empty_cache()
+
+    with open(out_jsonl, "w") as f:
+        for r in per_sample:
+            f.write(json.dumps(r) + "\n")
+
+    bl_acc = bl_correct / max(1, total)
+    cd_acc = cd_correct / max(1, total)
+    # McNemar
+    b = sum(1 for r in per_sample if r["bl_correct"] and not r["cd_correct"])
+    c = sum(1 for r in per_sample if not r["bl_correct"] and r["cd_correct"])
+    from scipy.stats import binomtest
+    mcnemar_p = binomtest(min(b, c), b + c, p=0.5).pvalue if (b + c) > 0 else 1.0
+    return {
+        "benchmark": bench_name,
+        "n": total,
+        "n_errors": err,
+        "baseline_acc": bl_acc,
+        "cd_acc": cd_acc,
+        "delta": cd_acc - bl_acc,
+        "mcnemar_b": b, "mcnemar_c": c, "mcnemar_p": mcnemar_p,
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sanity", action="store_true",
+                    help="Run 8 samples per benchmark to verify field names.")
+    ap.add_argument("--benchmarks", nargs="+", default=list(LOADERS.keys()),
+                    choices=list(LOADERS.keys()))
+    ap.add_argument("--mmbench_cap", type=int, default=1500,
+                    help="Cap MMBench at this many samples (full is 4377).")
+    ap.add_argument("--mmmu_cap", type=int, default=None,
+                    help="Cap MMMU at this many samples (default: full val ~800).")
+    ap.add_argument("--circular", action="store_true",
+                    help="Run MMBench CircularEval (4× cost on MMBench, "
+                         "honest scoring per Liu et al. ECCV 2024).")
+    args = ap.parse_args()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = REPO_ROOT / "results" / f"rebuttal_e5_named_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "per_sample").mkdir(exist_ok=True)
+    log_path = out_dir / "e5_named_log.txt"
+    log_file = open(log_path, "a", buffering=1)
+
+    def log(m):
+        print(m)
+        log_file.write(m + "\n")
+
+    log(f"=== rebuttal_e5_named_benchmarks ({ts}) ===")
+    log(f"benchmarks={args.benchmarks}  sanity={args.sanity}  "
+        f"mmbench_cap={args.mmbench_cap}  mmmu_cap={args.mmmu_cap}  "
+        f"circular={args.circular}")
+
+    if not PHASE2_CENTROID.exists():
+        log(f"FATAL: centroid file missing — {PHASE2_CENTROID}")
+        sys.exit(1)
+
+    cfg = get_config(MODEL_KEY)
+    model, processor, _ = load_model(MODEL_KEY)
+    lm_layers = find_lm_layers(model, cfg)
+    log(f"Loaded {MODEL_KEY}, {len(lm_layers)} LM layers")
+    centroids_npz = np.load(PHASE2_CENTROID)
+    text_mfa = KMeansCentroids(centroids_npz["text_centroids"])
+    log(f"Loaded centroids K={text_mfa.mu.shape[0]} D={text_mfa.mu.shape[1]}")
+
+    summary = {
+        "config": {
+            "model": MODEL_KEY, "text_layer": TEXT_LAYER,
+            "alpha_interp": ALPHA_INTERP, "alpha_cd": ALPHA_CD,
+            "centroid_source": str(PHASE2_CENTROID),
+            "benchmarks": args.benchmarks, "sanity": args.sanity,
+            "mmbench_cap": args.mmbench_cap, "mmmu_cap": args.mmmu_cap,
+            "circular": args.circular,
+        },
+        "results": [],
+        "timestamp": ts,
+    }
+
+    cap_per_bench = {
+        "mmmu": 8 if args.sanity else args.mmmu_cap,
+        "mmbench": 8 if args.sanity else args.mmbench_cap,
+        "mathvista": 8 if args.sanity else None,
+    }
+
+    for bench in args.benchmarks:
+        log(f"\n── {bench} ──")
+        t_load = time.time()
+        samples = LOADERS[bench](cap=cap_per_bench[bench], log=log)
+        log(f"  Loaded {len(samples)} samples in {(time.time()-t_load):.1f}s")
+        if not samples:
+            log(f"  ⚠ no samples — skipping {bench}")
+            continue
+        out_jsonl = out_dir / "per_sample" / f"{bench}.jsonl"
+        t0 = time.time()
+        r = evaluate_benchmark(
+            model, processor, lm_layers, bench, samples,
+            text_mfa, str(out_jsonl), log,
+        )
+        r["wallclock_min"] = (time.time() - t0) / 60.0
+        summary["results"].append(r)
+        log(f"  base={r['baseline_acc']:.4f}  +CD={r['cd_acc']:.4f}  "
+            f"Δ={r['delta']:+.4f}  McNemar p={r['mcnemar_p']:.4f}  "
+            f"({r['wallclock_min']:.1f} min)")
+        with open(out_dir / "e5_named_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    # ── Readout ──
+    readout = out_dir / "e5_named_readout.txt"
+    with open(readout, "w") as f:
+        f.write(f"E5 named-benchmark TCCD summary ({ts})\n")
+        f.write(f"Model: {MODEL_KEY}  L{TEXT_LAYER}  "
+                f"α_interp={ALPHA_INTERP}  α_cd={ALPHA_CD}\n\n")
+        f.write(f"{'Benchmark':<14s}{'n':>7s}{'Base':>10s}{'+CD':>10s}"
+                f"{'Δ':>10s}{'McNemar p':>14s}\n")
+        f.write("-" * 70 + "\n")
+        for r in summary["results"]:
+            f.write(f"{r['benchmark']:<14s}{r['n']:7d}"
+                    f"{r['baseline_acc']:9.4f} {r['cd_acc']:9.4f} "
+                    f"{r['delta']:+9.4f}{r['mcnemar_p']:13.4f}\n")
+        f.write("\nNotes:\n")
+        f.write("- MMMU/MathVista: only multi-choice items evaluated; "
+                "free-form items skipped.\n")
+        f.write("- MMBench: vanilla accuracy (not CircularEval) unless "
+                "--circular passed.\n")
+        f.write("- DocVQA NOT evaluated: open-ended OCR text recognition, "
+                "fundamentally different setup from MCQA TCCD; honest "
+                "future-work scope.\n")
+    log(f"\nDone. Readout: {readout}")
+    log_file.close()
+
+
+if __name__ == "__main__":
+    main()

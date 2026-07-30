@@ -22,6 +22,7 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "torch==2.6.0",
+        "torchvision==0.21.0",
         "transformers==5.4.0",
         "accelerate==1.13.0",
         "numpy==2.2.6",
@@ -38,7 +39,6 @@ setup(
     extras_require={
         # Needed only by quantised registry entries such as MedGemma.
         "quantization": ["bitsandbytes==0.49.2"],
-        "test": ["pytest==9.1.1"],
     },
     classifiers=[
         "Programming Language :: Python :: 3.10",

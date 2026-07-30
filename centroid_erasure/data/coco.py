@@ -50,8 +50,11 @@ def load_coco(
 
     Tries multiple HuggingFace COCO mirrors in order until one works.
     Images are streamed and shuffled with `seed`, matching the published
-    pipeline. Note that the harvest PROMPT matters: centroids must be fitted in
-    the same prompt context they will later be applied in.
+    pipeline. The paper fit uses one fixed generic harvest prompt, yielding
+    16 post-image tokens per image under the pinned processors (32,000 across
+    2,000 images), then applies the resulting banks to varied evaluation
+    prompts. Preserve the harvest prompt and rendering pipeline when refitting;
+    this is a reproducibility constraint, not semantic prompt matching.
 
     Args:
         max_samples: Maximum images to load (default 2000, matching BLINK scale)
