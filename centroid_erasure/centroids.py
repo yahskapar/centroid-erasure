@@ -36,6 +36,17 @@ class CentroidBank:
     def __init__(self, centers, meta=None):
         if isinstance(centers, np.ndarray):
             centers = torch.tensor(centers, dtype=torch.float32)
+        if not isinstance(centers, torch.Tensor):
+            raise TypeError("centers must be a NumPy array or torch tensor")
+        if centers.ndim != 2 or centers.shape[0] == 0 or centers.shape[1] == 0:
+            raise ValueError(
+                "centers must have non-empty shape (K, D); "
+                f"got {tuple(centers.shape)}"
+            )
+        if not centers.is_floating_point():
+            raise TypeError("centers must use a floating-point dtype")
+        if not torch.isfinite(centers).all():
+            raise ValueError("centers must contain only finite values")
         self.mu = centers
         self.meta = dict(meta or {})
         self._device = None

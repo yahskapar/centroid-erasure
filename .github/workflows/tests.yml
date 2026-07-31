@@ -1,0 +1,67 @@
+name: tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.10.20"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            setup.py
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip==26.1.2
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.6.0 torchvision==0.21.0
+          python -m pip install -e ".[test]"
+          python -m pip check
+
+      - name: Check package and command-line interfaces
+        run: |
+          python setup.py check --strict
+          python -m pip wheel --no-deps --no-build-isolation \
+            --wheel-dir /tmp/centroid-erasure-wheel .
+          python -c "import centroid_erasure, main; assert centroid_erasure.__version__ == '1.0.0'"
+          python main.py --help
+          for command in fit measure tccd; do
+            python main.py "${command}" --help
+          done
+          python demo/run_demo.py --help
+          python pipeline/paper_sweep.py --help
+
+      - name: Check source syntax
+        run: |
+          python -m compileall -q \
+            centroid_erasure main.py demo pipeline response_release/scripts scripts tests
+          bash -n setup.sh scripts/reproduce_core_result.sh
+
+      - name: Run CPU test suite
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          HF_DATASETS_OFFLINE: "1"
+          HF_HUB_OFFLINE: "1"
+          PYTHONDONTWRITEBYTECODE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: python -m pytest

@@ -5,9 +5,13 @@ import pytest
 import torch
 
 from centroid_erasure.data.utils import concat_images_horizontal, parse_mc_answer
-from centroid_erasure.decoding import contrastive_logits, select_alpha
+from centroid_erasure.decoding import contrastive_logits, select_alpha, tccd
 from centroid_erasure.eval_binary import eval_binary_logits, get_binary_token_ids
-from centroid_erasure.eval_mcqa import eval_mc_logits, get_choice_token_ids
+from centroid_erasure.eval_mcqa import (
+    eval_mc_logits,
+    get_choice_logits,
+    get_choice_token_ids,
+)
 from centroid_erasure.stats import bootstrap_ci, mcnemar_test
 
 
@@ -188,3 +192,155 @@ def test_answer_parsing_image_concatenation_and_statistics_are_deterministic():
         np.array([0, 0, 0, 1, 1, 1]),
         np.array([1, 1, 1, 0, 1, 1]),
     ) == {"fixed": 3, "broken": 1, "chi2": 1.0, "p_value": 0.3173}
+
+
+def test_tccd_runs_clean_then_erased_pass_and_returns_each_distribution(
+    monkeypatch,
+):
+    clean = torch.tensor([2.0, 4.0])
+    erased = torch.tensor([1.0, 6.0])
+    calls = []
+
+    def fake_clean(model, inputs):
+        calls.append(("clean", model, inputs))
+        return clean
+
+    def fake_erased(model, inputs, hook):
+        calls.append(("erased", model, inputs, hook))
+        return erased
+
+    monkeypatch.setattr("centroid_erasure.hooks.clean_logits", fake_clean)
+    monkeypatch.setattr("centroid_erasure.hooks.erased_logits", fake_erased)
+    model, inputs, hook = object(), {"input_ids": object()}, object()
+
+    combined, returned_clean, returned_erased = tccd(
+        model, inputs, hook, alpha_cd=0.5
+    )
+
+    torch.testing.assert_close(combined, torch.tensor([2.5, 3.0]))
+    assert returned_clean is clean
+    assert returned_erased is erased
+    assert calls == [
+        ("clean", model, inputs),
+        ("erased", model, inputs, hook),
+    ]
+
+
+def test_alpha_selection_handles_single_task_and_empty_candidate_intersection():
+    scores = {"only": {0.2: 1.0, 0.4: 0.5}}
+    assert (
+        select_alpha(
+            "cv",
+            scores,
+            task="only",
+            grid=[0.2, 0.4],
+            fixed_alpha=0.4,
+        )
+        == 0.4
+    )
+    assert (
+        select_alpha(
+            "cv",
+            scores,
+            task="only",
+            grid=[0.2],
+            fixed_alpha=0.4,
+        )
+        == 0.2
+    )
+    with pytest.raises(ValueError, match="no candidate alpha"):
+        select_alpha("best", scores, task="only", grid=[0.8])
+
+
+def test_choice_logit_extraction_and_empty_evaluations_are_well_defined():
+    class Model:
+        def __call__(self, **_inputs):
+            logits = torch.tensor([[[0.0, 1.5, -2.0]]])
+            return SimpleNamespace(logits=logits)
+
+    assert get_choice_logits(
+        Model(), {"input_ids": torch.tensor([[1]])}, {"A": 1, "B": 2}
+    ) == {"A": 1.5, "B": -2.0}
+
+    processor = SimpleNamespace(tokenizer=Tokenizer())
+    mc = eval_mc_logits(
+        Model(), "qwen", processor, [], torch.device("cpu")
+    )
+    assert mc == {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 0,
+        "per_sample": [],
+    }
+    binary = eval_binary_logits(
+        Model(), "qwen", processor, [], torch.device("cpu")
+    )
+    assert binary == {
+        "accuracy": 0.0,
+        "per_sample": [],
+        "per_category": {},
+        "n": 0,
+    }
+
+
+def test_binary_ties_choose_no_and_mcnemar_zero_discordance(monkeypatch):
+    processor = SimpleNamespace(tokenizer=Tokenizer())
+    monkeypatch.setattr(
+        "centroid_erasure.models.prepare_inputs",
+        lambda *_args, **_kwargs: ({"input_ids": torch.tensor([[1]])}, ""),
+    )
+
+    class TiedModel:
+        def __call__(self, **_inputs):
+            return SimpleNamespace(logits=torch.zeros((1, 1, 12)))
+
+    result = eval_binary_logits(
+        TiedModel(),
+        "qwen",
+        processor,
+        [
+            {
+                "question": "tie",
+                "answer": "no",
+                "image": object(),
+                "category": "tie",
+            }
+        ],
+        torch.device("cpu"),
+    )
+    assert result["per_sample"] == [1]
+    assert result["accuracy"] == 1.0
+
+    assert mcnemar_test(
+        np.array([0, 1, 1]), np.array([0, 1, 1])
+    ) == {
+        "fixed": 0,
+        "broken": 0,
+        "chi2": 0.0,
+        "p_value": 1.0,
+    }
+    with pytest.raises(ValueError):
+        mcnemar_test(np.array([0, 1]), np.array([0, 1, 1]))
+
+
+@pytest.mark.parametrize("statistic", [bootstrap_ci, mcnemar_test])
+@pytest.mark.parametrize(
+    ("baseline", "intervention", "message"),
+    [
+        ([], [], "must not be empty"),
+        ([0, 1], [0], "same number of samples"),
+        ([[0, 1]], [[0, 1]], "one-dimensional"),
+        ([0, 2], [0, 1], "only 0/1 outcomes"),
+    ],
+)
+def test_paired_statistics_reject_invalid_inputs(
+    statistic, baseline, intervention, message
+):
+    with pytest.raises(ValueError, match=message):
+        statistic(np.asarray(baseline), np.asarray(intervention))
+
+
+@pytest.mark.parametrize("n_boot", [0, -1, 1.5, True])
+def test_bootstrap_requires_a_positive_integer_resample_count(n_boot):
+    with pytest.raises(ValueError, match="positive integer"):
+        bootstrap_ci(np.array([0, 1]), np.array([1, 1]), n_boot=n_boot)

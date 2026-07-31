@@ -168,6 +168,8 @@ class CentroidReplacementHook:
     def register(self):
         from .models import find_lm_layers, get_config
 
+        if self._handle is not None:
+            raise RuntimeError("centroid replacement hook is already registered")
         text_config = getattr(self.model.config, "text_config", self.model.config)
         hidden_size = getattr(text_config, "hidden_size", None)
         if hidden_size is not None and self.bank.dim != hidden_size:

@@ -6,6 +6,23 @@ import numpy as np
 from typing import Dict
 
 
+def _paired_binary_arrays(baseline, intervention):
+    """Validate paired, one-dimensional binary outcomes."""
+    bl = np.asarray(baseline)
+    iv = np.asarray(intervention)
+    if bl.ndim != 1 or iv.ndim != 1:
+        raise ValueError("baseline and intervention must be one-dimensional")
+    if bl.shape != iv.shape:
+        raise ValueError(
+            "baseline and intervention must have the same number of samples"
+        )
+    if len(bl) == 0:
+        raise ValueError("baseline and intervention must not be empty")
+    if not np.isin(bl, (0, 1)).all() or not np.isin(iv, (0, 1)).all():
+        raise ValueError("baseline and intervention must contain only 0/1 outcomes")
+    return bl, iv
+
+
 def bootstrap_ci(
     baseline: np.ndarray,
     intervention: np.ndarray,
@@ -24,9 +41,14 @@ def bootstrap_ci(
     Returns:
         Dict with ci_low, ci_high (95%), bootstrap_p (one-sided)
     """
+    if (
+        isinstance(n_boot, (bool, np.bool_))
+        or not isinstance(n_boot, (int, np.integer))
+        or n_boot <= 0
+    ):
+        raise ValueError("n_boot must be a positive integer")
     rng = np.random.RandomState(seed)
-    bl = np.asarray(baseline)
-    iv = np.asarray(intervention)
+    bl, iv = _paired_binary_arrays(baseline, intervention)
     n = len(bl)
 
     deltas = np.empty(n_boot)
@@ -61,8 +83,7 @@ def mcnemar_test(
     """
     from scipy.stats import chi2
 
-    bl = np.asarray(baseline)
-    iv = np.asarray(intervention)
+    bl, iv = _paired_binary_arrays(baseline, intervention)
 
     fixed = int(((bl == 0) & (iv == 1)).sum())
     broken = int(((bl == 1) & (iv == 0)).sum())

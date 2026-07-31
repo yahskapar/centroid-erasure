@@ -37,7 +37,7 @@ setup(
         "pandas==2.3.3",
     ],
     extras_require={
-        "test": ["pytest>=7.4,<9"],
+        "test": ["pytest==8.4.2"],
         # Needed only by quantised registry entries such as MedGemma.
         "quantization": ["bitsandbytes==0.49.2"],
     },

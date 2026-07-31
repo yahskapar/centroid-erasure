@@ -145,10 +145,11 @@ pip install -e ".[test]"
 pytest
 ```
 
-The suite covers centroid-bank operations and integrity, replacement hooks and
-token spans, decoding and scoring, alpha selection, CLI safety, and the
-released-result verification commands. It does not download model weights or
-datasets; GPU reproduction is covered separately below.
+The suite covers centroid artifacts, hooks and token spans, model and dataset
+adapters, decoding and scoring, CLI orchestration and safety, packaging, and
+the released-result verification commands. Push-time tests are deterministic,
+CPU-only, and network-free; full GPU reproduction is the separate release gate
+below.
 
 # :computer: Quick Demo
 

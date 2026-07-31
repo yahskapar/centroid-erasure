@@ -4,8 +4,13 @@ import pytest
 import torch
 
 from centroid_erasure.centroids import CentroidBank
-from centroid_erasure.hooks import CentroidReplacementHook
+from centroid_erasure.hooks import (
+    CentroidReplacementHook,
+    clean_logits,
+    erased_logits,
+)
 from centroid_erasure.visual_tokens import find_visual_token_range
+from centroid_erasure.visual_tokens import estimate_grid_dims
 
 
 @pytest.mark.parametrize(
@@ -151,3 +156,176 @@ def test_visual_token_detection_rejects_unknown_or_invalid_spans():
     invalid_ids = torch.tensor([[1, 2, 3, 151655]], dtype=torch.long)
     with pytest.raises(ValueError, match="returned invalid span"):
         find_visual_token_range("qwen", invalid_ids, hidden)
+
+
+def test_secondary_visual_marker_paths_and_grid_estimate():
+    qwen_ids = torch.tensor([[7, 151652, 8, 9]])
+    assert find_visual_token_range(
+        "qwen", qwen_ids, torch.zeros((1, 6, 2))
+    ) == (1, 3)
+
+    idefics_ids = torch.tensor([[128257] * 6])
+    assert find_visual_token_range(
+        "idefics3", idefics_ids, torch.zeros((1, 6, 2))
+    ) == (0, 6)
+
+    class Tokenizer:
+        def __init__(self, vocab):
+            self.vocab = vocab
+
+        def get_vocab(self):
+            return self.vocab
+
+    internvl_processor = SimpleNamespace(
+        tokenizer=Tokenizer({"<IMG_CONTEXT>": 42})
+    )
+    assert find_visual_token_range(
+        "internvl",
+        torch.tensor([[1, 42, 42, 2]]),
+        torch.zeros((1, 4, 2)),
+        internvl_processor,
+    ) == (1, 3)
+
+    llava_processor = SimpleNamespace(tokenizer=Tokenizer({"<image>": 43}))
+    assert find_visual_token_range(
+        "llava_ov",
+        torch.tensor([[1, 43, 43, 2]]),
+        torch.zeros((1, 4, 2)),
+        llava_processor,
+    ) == (1, 3)
+
+    assert find_visual_token_range(
+        "gemma3",
+        torch.tensor([[1, 262144, 262144, 2]]),
+        torch.zeros((1, 4, 2)),
+    ) == (1, 3)
+    assert estimate_grid_dims(576) == (24, 24)
+    assert estimate_grid_dims(30) == (5, 5)
+
+
+def test_hook_registration_context_and_removal_lifecycle(monkeypatch):
+    monkeypatch.setattr(
+        "centroid_erasure.hooks.find_visual_token_range",
+        lambda *args: (1, 3),
+    )
+
+    class ToyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=2)
+            self.model = torch.nn.Module()
+            self.model.language_model = torch.nn.Module()
+            self.model.language_model.layers = torch.nn.ModuleList(
+                [torch.nn.Identity(), torch.nn.Identity()]
+            )
+
+    model = ToyModel()
+    bank = CentroidBank(torch.zeros((1, 2)))
+    hook = CentroidReplacementHook(
+        model,
+        bank,
+        "qwen",
+        None,
+        layer=0,
+        alpha_interp=0.0,
+        modality="visual",
+    ).set_input(torch.tensor([[1, 2, 3, 4]]))
+    layer = model.model.language_model.layers[0]
+    hidden = torch.ones((1, 4, 2))
+
+    assert hook.register() is hook
+    assert hook._handle is not None
+    with pytest.raises(RuntimeError, match="already registered"):
+        hook.register()
+    expected = hidden.clone()
+    expected[:, 1:3] = 0
+    torch.testing.assert_close(layer(hidden), expected)
+    hook.remove()
+    assert hook._handle is None
+    torch.testing.assert_close(layer(hidden), hidden)
+    hook.remove()
+
+    with pytest.raises(RuntimeError, match="inside context"):
+        with hook:
+            assert hook._handle is not None
+            raise RuntimeError("inside context")
+    assert hook._handle is None
+
+
+def test_hook_registration_rejects_width_and_layer_mismatches():
+    class ToyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=2)
+            self.model = torch.nn.Module()
+            self.model.language_model = torch.nn.Module()
+            self.model.language_model.layers = torch.nn.ModuleList(
+                [torch.nn.Identity()]
+            )
+
+    model = ToyModel()
+    wrong_width = CentroidReplacementHook(
+        model,
+        CentroidBank(torch.zeros((1, 3))),
+        "qwen",
+        None,
+    )
+    with pytest.raises(ValueError, match="does not match model hidden size"):
+        wrong_width.register()
+
+    wrong_layer = CentroidReplacementHook(
+        model,
+        CentroidBank(torch.zeros((1, 2))),
+        "qwen",
+        None,
+        layer=1,
+    )
+    with pytest.raises(IndexError, match="out of range"):
+        wrong_layer.register()
+
+    with pytest.raises(ValueError, match="modality must be"):
+        CentroidReplacementHook(
+            model, CentroidBank(torch.zeros((1, 2))), "qwen", None,
+            modality="audio",
+        )
+    with pytest.raises(ValueError, match="segment must be"):
+        CentroidReplacementHook(
+            model, CentroidBank(torch.zeros((1, 2))), "qwen", None,
+            segment="semantic-options",
+        )
+
+
+def test_clean_and_erased_logits_use_final_position_and_hook_context():
+    class Model:
+        def __call__(self, **inputs):
+            assert torch.is_grad_enabled() is False
+            assert "input_ids" in inputs
+            logits = torch.arange(24, dtype=torch.float32).reshape(1, 3, 8)
+            return SimpleNamespace(logits=logits)
+
+    class Hook:
+        def __init__(self):
+            self.input_ids = None
+            self.entered = 0
+            self.exited = 0
+
+        def set_input(self, input_ids):
+            self.input_ids = input_ids
+            return self
+
+        def __enter__(self):
+            self.entered += 1
+            return self
+
+        def __exit__(self, *_exc):
+            self.exited += 1
+            return False
+
+    inputs = {"input_ids": torch.tensor([[1, 2, 3]])}
+    hook = Hook()
+
+    expected = torch.arange(16, 24, dtype=torch.float32)
+    torch.testing.assert_close(clean_logits(Model(), inputs), expected)
+    torch.testing.assert_close(erased_logits(Model(), inputs, hook), expected)
+    assert hook.input_ids is inputs["input_ids"]
+    assert (hook.entered, hook.exited) == (1, 1)
