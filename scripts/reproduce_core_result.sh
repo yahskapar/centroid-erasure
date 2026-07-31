@@ -40,15 +40,69 @@ echo " centroid-erasure reproduction  ($STAMP)"       | tee -a "$LOG"
 echo "==============================================" | tee -a "$LOG"
 
 # ---------- [0] environment ----------
+# Check the recorded public environment's stable direct pins. bitsandbytes is
+# intentionally omitted (the released Qwen bank is bf16, not quantised), as is
+# FAISS (nothing is fitted in this reproduction).
+VERSION_REPORT=$($PY - <<'PY' 2>/dev/null
+import importlib
+import importlib.metadata
+import platform
+import sys
+
+
+def module_version(name):
+    try:
+        module = importlib.import_module(name)
+        return str(module.__version__)
+    except Exception as exc:
+        return f"unavailable:{type(exc).__name__}"
+
+
+def distribution_version(name):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "missing"
+    except Exception as exc:
+        return f"unavailable:{type(exc).__name__}"
+
+
+checks = [
+    ("python", platform.python_version(), "3.10.20"),
+    ("torch", module_version("torch"), "2.6.0+cu124"),
+    ("torchvision", module_version("torchvision"), "0.21.0+cu124"),
+    ("transformers", distribution_version("transformers"), "5.4.0"),
+    ("accelerate", distribution_version("accelerate"), "1.13.0"),
+    ("numpy", distribution_version("numpy"), "2.2.6"),
+    ("scikit-learn", distribution_version("scikit-learn"), "1.7.2"),
+    ("scipy", distribution_version("scipy"), "1.15.3"),
+    ("datasets", distribution_version("datasets"), "4.8.4"),
+    ("Pillow", distribution_version("Pillow"), "12.1.1"),
+    ("qwen-vl-utils", distribution_version("qwen-vl-utils"), "0.0.14"),
+    ("tqdm", distribution_version("tqdm"), "4.67.3"),
+    ("huggingface-hub", distribution_version("huggingface-hub"), "1.8.0"),
+    ("pandas", distribution_version("pandas"), "2.3.3"),
+]
+for name, actual, expected in checks:
+    actual = actual.replace("\t", " ").replace("\n", " ")
+    print(f"{name}\t{actual}\t{expected}")
+raise SystemExit(any(actual != expected for _, actual, expected in checks))
+PY
+)
+VERSION_CHECK=$?
 GPU=$($PY -c "import torch;print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')" 2>/dev/null || echo none)
-TORCH=$($PY -c "import torch;print(torch.__version__)" 2>/dev/null || echo missing)
-TV=$($PY -c "import torchvision;print(torchvision.__version__)" 2>/dev/null || echo missing)
-TRF=$($PY -c "import transformers;print(transformers.__version__)" 2>/dev/null || echo missing)
-echo "[0] GPU=$GPU  torch=$TORCH  torchvision=$TV  transformers=$TRF" | tee -a "$LOG"
+echo "[0] runtime version preflight (GPU=$GPU)" | tee -a "$LOG"
+while IFS=$'\t' read -r PACKAGE ACTUAL EXPECTED; do
+  [ -n "${PACKAGE:-}" ] || continue
+  STATUS="OK"
+  [ "$ACTUAL" = "$EXPECTED" ] || STATUS="MISMATCH"
+  printf "    %-17s %-20s expected %-20s %s\n" \
+    "$PACKAGE" "$ACTUAL" "$EXPECTED" "$STATUS" | tee -a "$LOG"
+done <<< "$VERSION_REPORT"
 PINNED="yes"
-if [ "$TORCH" != "2.6.0+cu124" ] || [ "$TV" != "0.21.0+cu124" ] || [ "$TRF" != "5.4.0" ]; then
+if [ "$VERSION_CHECK" -ne 0 ]; then
   PINNED="no"
-  echo "    NOTE: versions differ from the pinned stack (torch 2.6.0+cu124 / torchvision 0.21.0+cu124 / transformers 5.4.0)." | tee -a "$LOG"
+  echo "    NOTE: versions differ from the recorded stack." | tee -a "$LOG"
   echo "          The strict tolerance below assumes the pinned stack. See requirements.txt." | tee -a "$LOG"
 fi
 

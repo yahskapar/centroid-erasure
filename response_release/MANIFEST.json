@@ -242,6 +242,60 @@
       "status": "retained_descriptive_two_harnesses"
     }
   ],
+  "auxiliary_files": [
+    {
+      "path": "methods/chair_captioning_qwen7b.py.txt",
+      "sha256": "b8257160c44d17c95d89cb94d2b663afb31d7a1fb08c21c2d55a341a92c7b96a"
+    },
+    {
+      "path": "methods/rebuttal_blink_cd_portfolio.py.txt",
+      "sha256": "1c84101fe86e5133b9347512330b910fe8da011e398e058bb037126699d8c9c7"
+    },
+    {
+      "path": "methods/rebuttal_docvqa_asymmetry.py.txt",
+      "sha256": "f8a9d25a1744364c53647631c031475a59962f81af3b60a8cbad1854107337cf"
+    },
+    {
+      "path": "methods/rebuttal_layer_curve.py.txt",
+      "sha256": "cb81baccae2589fc29ce6b0c1260b621ac9779527a396a42921355b466c3921b"
+    },
+    {
+      "path": "methods/rebuttal_mmbench_cross_model.py.txt",
+      "sha256": "cae4ab7b23d44cf3f55214ff1aefa8004c6e7c5148729cfb6f0a9801553ced91"
+    },
+    {
+      "path": "methods/rebuttal_openended_vqa.py.txt",
+      "sha256": "69efb2c247829a81486aaa3e002941190f30bfd3cab5824f2af14a4767cf5723"
+    },
+    {
+      "path": "methods/rebuttal_opera_v2.py.txt",
+      "sha256": "fcd2a88d81e429a633354ee130dafcaf5a4c2c3203466268695b5f735d9c09c0"
+    },
+    {
+      "path": "methods/v4_adaptive_tccd.py.txt",
+      "sha256": "cbbcb7f797d290df15cfdd3bc8d5b4fc9998870c00876db2d59cdd85d9ae83fe"
+    },
+    {
+      "path": "methods/vpbench_medblink_sweep.py.txt",
+      "sha256": "91d092b899024a8b011f992113b0f667aefd9d5324185e824129d789ec0d69d7"
+    },
+    {
+      "path": "results/blink_portfolio.json",
+      "sha256": "13e8641c68f9daa73986a0e7c830fb22919e93cc5653f9f1dc0c31b45c1dbaf5"
+    },
+    {
+      "path": "results/layer_probe.json",
+      "sha256": "c835b5fc8e3ddfc15b6f13c0d72a192b0f9d7b6844e3ae2aaf9979935533cd17"
+    },
+    {
+      "path": "results/mmbench_cross_model.json",
+      "sha256": "da0b5b3be2d16ae7ff8aba2ef5fd61626a8ce92b96cd1947f3e5b9513e303a97"
+    },
+    {
+      "path": "results/opera.json",
+      "sha256": "a726bd98dce39fa06d25e1d18fbe3359684d78f25e1feb6e9ba1b33fd53d4de4"
+    }
+  ],
   "format_version": 1,
   "content_scope": "aggregate experimental records and sanitized protocol material",
   "release_scope": "aggregate supplementary analyses reported in the paper"

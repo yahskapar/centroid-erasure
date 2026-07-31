@@ -34,11 +34,11 @@ The published pipeline evaluates on the benchmarks below. **None of them is redi
 
 | Benchmark | Used for | Loader shipped | Source |
 |---|---|---|---|
-| [BLINK](https://huggingface.co/datasets/BLINK-Benchmark/BLINK) | primary six-task evaluation | `data/blink.py` | Fu *et al.*, ECCV 2024 |
-| [MS-COCO](https://cocodataset.org/) | centroid fitting (2,000 images) | `data/coco.py` | Lin *et al.*, 2014 |
-| [MedBLINK](https://huggingface.co/datasets/MahtabBg/MedBLINK) | clinical perception | `data/medblink.py` | 2025 |
-| [CV-Bench](https://huggingface.co/datasets/nyu-visionx/CV-Bench) | cross-benchmark grid | `data/cvbench.py` | Tong *et al.*, 2024 |
-| [MMVP](https://huggingface.co/datasets/MMVP/MMVP) | cross-benchmark grid | `data/mmvp.py` | Tong *et al.*, 2024 |
+| [BLINK](https://huggingface.co/datasets/BLINK-Benchmark/BLINK) | primary six-task evaluation | `centroid_erasure/data/blink.py` | Fu *et al.*, ECCV 2024 |
+| [MS-COCO](https://cocodataset.org/) | centroid fitting (2,000 images) | `centroid_erasure/data/coco.py` | Lin *et al.*, 2014 |
+| [MedBLINK](https://huggingface.co/datasets/MahtabBg/MedBLINK) | clinical perception | `centroid_erasure/data/medblink.py` | 2025 |
+| [CV-Bench](https://huggingface.co/datasets/nyu-visionx/CV-Bench) | cross-benchmark grid | `centroid_erasure/data/cvbench.py` | Tong *et al.*, 2024 |
+| [MMVP](https://huggingface.co/datasets/MMVP/MMVP) | cross-benchmark grid | `centroid_erasure/data/mmvp.py` | Tong *et al.*, 2024 |
 | MMBench | CircularEval recovery | no | Liu *et al.*, 2023 |
 | MMStar | cross-benchmark grid | no | Chen *et al.*, 2024 |
 | DocVQA | scope boundary | no | Mathew *et al.*, 2021 |
@@ -71,7 +71,7 @@ Centroid banks for all seven models in the paper are in `centroids/`, so you can
 | `qwen3` | Qwen3-VL-8B-Instruct | SFT+ |
 | `qwen3_4b` | Qwen3-VL-4B-Instruct | SFT+ |
 | `internvl` | InternVL2.5-8B-MPO | MPO |
-| `llava_ov` | LLaVA-OneVision-7B | SFT |
+| `llava_ov` | LLaVA-OneVision-7B | DPO |
 | `idefics3` | Idefics3-8B-Llama3 | SFT |
 
 Each `.npz` holds a `text_centroids` and a `vis_centroids` array, both `(256, hidden_dim)` float32, fitted at L12 and L16 respectively on 2,000 MS-COCO images streamed from the `detection-datasets/coco` train split and shuffled with seed 1337. The recorded text fit uses the fixed generic prompt `Describe what you see in this image.\nAnswer:` and all 16 post-image tokens per image (32,000 text activations total). Those centroids are then applied to varied downstream post-image prompts; semantic prompt identity is not assumed.
@@ -195,7 +195,9 @@ Note 2: If `find_visual_token_range` cannot locate architecture-specific image m
 
 * STEP 1: Add a loader in `centroid_erasure/data/` returning `{task_name: [sample, ...]}`, where each sample is a dict with keys `prompt`, `images` (list of PIL), and `answer`.
 
-* STEP 2: Register it in `_load_samples()` in `main.py`.
+* STEP 2: Route it in `_load_samples()`, add its name to the `--benchmark`
+  choices in `build_parser()`, and add its source/split/revision metadata to
+  `_output_provenance()`, all in `main.py`.
 
 Note 1: The scoring path assumes single-token multiple choice, taking an argmax over answer-letter tokens. Free-form benchmarks need their own metric. The generative evaluations reported in the paper (DocVQA, OK-VQA, COCO captioning) used separate scripts that are not part of this release.
 
@@ -279,7 +281,11 @@ If you find our [paper](https://arxiv.org/abs/2604.14363) or this code useful fo
 
 # License
 
-[Apache-2.0](./LICENSE) covers the code in this repository.
+[Apache-2.0](./LICENSE) covers the code in this repository unless a file or
+subdirectory states otherwise. The supplementary method and verification code
+under [`response_release/`](response_release/) is MIT-licensed as documented in
+[`response_release/LICENSES.md`](response_release/LICENSES.md) and
+[`response_release/LICENSE-MIT`](response_release/LICENSE-MIT).
 
 The centroid `.npz` artifacts are derived from activations of third-party model weights over MS-COCO images, and remain subject to the terms of those upstream models and of MS-COCO. Benchmark and model licenses are the user's responsibility.
 

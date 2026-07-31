@@ -42,15 +42,16 @@ labels.
 `recompute_variance.py` verifies the five canonical centroid refits and the
 separate 3×5 sensitivity grid, including population SDs, group ordering,
 replacement-cost ranges, and the cross-harness non-pooling warning.
-`verify_release.py` validates every JSON file, every manifest checksum, and
-the checksums nested in aggregate indexes, including the referenced seed-42
-fixture.
+`verify_release.py` validates every JSON file, verifies every claim,
+auxiliary-file, and nested-index checksum (including the referenced seed-42
+fixture), and fails if any released JSON other than the self-describing
+manifest lacks checksum coverage.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `MANIFEST.json` | Claim-level status, sample size, method/result mapping, and SHA-256 checksums |
+| `MANIFEST.json` | Claim-level status, sample size, method/result mapping, and SHA-256 coverage for claim roots and auxiliary public records |
 | `results/breadth/` | Ten-model, eight-benchmark supported-span grid; no Qwen2-VL row |
 | `results/all14_blink/` | All-14 BLINK aggregate tables for Qwen and Qwen3 |
 | `results/benchmark_portfolio.json` | Aggregate CVBench/MMStar/MMVP/VPBench/MedBLINK sweeps |
