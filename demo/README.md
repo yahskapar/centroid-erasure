@@ -1,6 +1,6 @@
-# demo/
+# Demo
 
-A single command that shows the paper's two claims end to end.
+Run a compact end-to-end example of centroid replacement and TCCD:
 
 ```
 python demo/run_demo.py
@@ -18,8 +18,8 @@ precomputed bank at `centroids/qwen.npz`.
 
 ## What it shows
 
-Three BLINK tasks, chosen so that the selectivity of the correction is visible
-rather than asserted:
+The demo uses three BLINK tasks that illustrate the selectivity of the
+intervention:
 
 | Task | Type | Expectation |
 |---|---|---|
@@ -36,21 +36,18 @@ of full visual erasure, and the TCCD delta. It closes with two verdicts:
 The machine-readable output is written to the ignored path
 `results/demo_results.json`, so running the demo does not dirty a clean clone.
 
-## Reading the output honestly
+## Interpreting the output
 
-The demo defaults to 40 samples per task so it finishes quickly. That is small
-enough that a single task can land the wrong way by chance. If a verdict is
-borderline, raise it:
+The demo defaults to 40 samples per task for a short run. Estimates from this
+subset can vary, so increase the sample count for a tighter comparison:
 
 ```
 python demo/run_demo.py --max-per-task 120
 ```
 
-Demo numbers differ from the paper for exactly one reason: the sample subset.
-The demo reads `centroids/qwen.npz`, which is byte-identical to the bank behind
-the published results, and fits nothing, so the K-means backend plays no part
-here. `fixtures/qwen_expected.json` holds the published output for the same
-model; raising `--max-per-task` should walk your numbers toward it.
+The demo reads the released `centroids/qwen.npz` bank and does not refit
+centroids. `fixtures/qwen_expected.json` holds the full-split reference output
+for the same model; estimates should approach it as `--max-per-task` increases.
 
 ## Trying it on another model
 

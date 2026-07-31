@@ -1,29 +1,22 @@
-# Supplementary analysis release
+# Supplementary Analysis
 
-This directory releases analysis code and aggregate experimental records for
-supplementary results reported in the paper.
-It is intentionally separate from the core centroid-erasure package so that
-the paper pipeline remains small and the provenance of supplementary analyses
-stays explicit.
+This directory contains aggregate experimental records and analysis code for
+the paper's supplementary and camera-ready results. It is separate from the
+core package so that each analysis can retain its own method and provenance.
 
-The release is conservative:
+The JSON records contain author-generated aggregate metrics, sample counts,
+paired-test discordance counts, and checksums. The `methods/` directory
+contains sanitized protocol snapshots. Third-party benchmark content, model
+weights, per-example generations, and external-judge prompts or responses are
+not included; see [`LICENSES.md`](LICENSES.md) for licensing details.
 
-- It contains aggregate metrics, sample counts, paired-test discordance
-  counts, and sanitized method snapshots.
-- It contains no benchmark questions, answers, captions, images, generated
-  per-example text, model weights, centroid banks, private discussion text,
-  ratings, identities, unrelated-project material, machine-local paths, or
-  credentials.
-- It excludes Qwen2-VL from the primary breadth grid because that run used an
-  unsupported visual-span fallback.
-- It corrects MMBench CircularEval to the 938 base questions with all four
-  canonical dataset rotations.
-- It labels the segment experiment as a positional-span heuristic, not a
-  semantic question/options parser.
-- It omits invalid or superseded analyses rather than presenting them as
-  reported evidence.
+The primary breadth grid uses models with validated visual-token spans.
+CircularEval uses 938 base questions with all four canonical rotations, and
+the segment experiment is reported as a positional-span heuristic. Additional
+scope and correction details are documented in
+[`CORRECTIONS.md`](CORRECTIONS.md).
 
-## Recompute and validate released claims
+## Recompute the released summaries
 
 From the repository root:
 
@@ -33,19 +26,14 @@ python3 response_release/scripts/recompute_variance.py
 python3 response_release/scripts/verify_release.py
 ```
 
-All three commands use only the Python standard library. `recompute_claims.py`
-recalculates the breadth-grid counts, exact paired test for corrected
-CircularEval, canonical MMBench portfolio, LOMO signed-rank test, canonical
-mixed-effects summary, fixed DoLa/SDCD baselines, OPERA screening nuance,
-stage probe, calibration summaries, generative checks, and positional-span
-labels.
-`recompute_variance.py` verifies the five canonical centroid refits and the
-separate 3×5 sensitivity grid, including population SDs, group ordering,
-replacement-cost ranges, and the cross-harness non-pooling warning.
-`verify_release.py` validates every JSON file, verifies every claim,
-auxiliary-file, and nested-index checksum (including the referenced seed-42
-fixture), and fails if any released JSON other than the self-describing
-manifest lacks checksum coverage.
+All three commands use only the Python standard library:
+
+* `recompute_claims.py` recalculates the breadth, MMBench, baseline,
+  calibration, generative, stage, and positional-span summaries.
+* `recompute_variance.py` recalculates the five centroid refits and the
+  separate 3×5 sensitivity grid.
+* `verify_release.py` validates the JSON records, claim mappings, and nested
+  checksums.
 
 ## Layout
 
@@ -70,9 +58,8 @@ manifest lacks checksum coverage.
 ## Interpreting the method files
 
 Files ending in `.py.txt` are non-executable protocol records that preserve
-experiment logic and MIT notices. Direct equivalents are named with public
-`centroid_erasure` or `pipeline` modules. Unavailable helper names are explicit
-placeholders, not import targets or supported runners.
+experiment logic and MIT notices. Maintained inference implementations are
+provided by the public `centroid_erasure` and `pipeline` modules.
 
 The maintained model loading, centroid replacement, benchmark loading, and
 paper sweep are in the repository root. `cd_baselines_summary.py` is a
@@ -80,13 +67,10 @@ runnable aggregate summarizer, and aggregate recomputation scripts under
 `scripts/` are directly runnable. Concise protocol records cover the fixed
 DoLa/SDCD comparison, statistics, and external-judge analysis.
 
-This distinction matters: preserving the historical inference code exposes
-the actual protocol, while the public package remains the maintained route
-for rerunning model inference. The manifest marks each retained, corrected,
-exploratory, or negative result rather than treating all response analyses as
-equally confirmatory.
+`MANIFEST.json` records the status, provenance, and checksum coverage of each
+released analysis.
 
-## Primary retained outcomes
+## Summary of released results
 
 - Supported breadth grid: 10 models × 8 benchmarks; among 70 non-chance
   cells, text cost exceeds visual cost in 69 and ties once.
@@ -117,4 +101,5 @@ equally confirmatory.
   open-ended OK-VQA soft accuracy falls 6.55 points and caption object recall
   falls 2.92 points under its distinct replacement protocol.
 
-See `CORRECTIONS.md` before citing any supplementary-analysis number.
+Citation-ready values and their qualifications are documented in
+[`CORRECTIONS.md`](CORRECTIONS.md).

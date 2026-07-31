@@ -1,7 +1,7 @@
-# Reproduction record
+# Reproduction Record
 
-A full-split run of `scripts/reproduce_core_result.sh` on the hardware below,
-recorded so you have something concrete to compare against.
+Reference run for `scripts/reproduce_core_result.sh` on the full BLINK
+validation split.
 
 | | |
 |---|---|
@@ -30,16 +30,11 @@ recorded so you have something concrete to compare against.
 
 Asymmetry: **19.3x** ours against 19.2x published.
 
-## How close is that
+## Comparison
 
 Largest per-task deviation: **0.000050**.
 Mean text cost deviation: **0.000015**.
 
-Both sit at the rounding precision of the stored reference values, which are
-recorded to four decimals. This is an exact reproduction, not a directional one.
-
-The script's strict tolerance is two items per task (0.014 to 0.017 here) and
-0.010 on the mean. The observed deviation is roughly 280x inside that band, so
-the check has plenty of headroom for GPU nondeterminism while still being tight
-enough to catch a real environment problem. The earlier 0.05 bar would have
-passed a run that was about seven items per task wrong.
+The stored reference values use four decimal places. The reproduction script
+accepts a two-item tolerance per task (0.014–0.017 for these task sizes) and a
+0.010 tolerance on mean text cost to accommodate GPU nondeterminism.

@@ -1,9 +1,11 @@
-# Extending centroid-erasure to a new model
+# Extending centroid-erasure
 
-The method needs three things from a model, and only the third is genuinely
-architecture-specific.
+Adding a model requires a loading configuration, layer indices, and a
+validated visual-token span.
 
-## 1. A way to load it
+## Adding a model
+
+### 1. Model loading
 
 Add a `ModelConfig` to `MODEL_REGISTRY` in `centroid_erasure/models.py`:
 
@@ -18,9 +20,8 @@ Add a `ModelConfig` to `MODEL_REGISTRY` in `centroid_erasure/models.py`:
 ```
 
 `lm_layer_path` is the dotted attribute path to the decoder's `nn.ModuleList`.
-If you get it wrong, `find_lm_layers` falls back to a heuristic search for a
-`ModuleList` longer than 10 entries, which usually finds it anyway. Common
-paths across current VLMs:
+When that path is unavailable, `find_lm_layers` searches for a
+`ModuleList` with more than 10 entries. Common paths include:
 
 | Family | Path |
 |---|---|
@@ -36,12 +37,12 @@ Then add a branch to `load_model()` and one to `prepare_inputs()`. Most recent
 models work with the generic `AutoModelForImageTextToText` plus
 `apply_chat_template` path already present for several families.
 
-## 2. Layer indices
+### 2. Layer indices
 
-The paper hooks text at **L12** and visual at **L16** on models of 28-32
-layers. These are not derived automatically, and there is nothing magic about
-the specific integers: they sit in the middle band where the paper's layer
-sweep shows the effect is present (roughly L4-L22).
+The paper hooks text at **L12** and visual at **L16** on models with 28–32
+layers. These indices were selected from the middle band where the layer sweep
+observed the effect (approximately L4–L22); they are not inferred
+automatically.
 
 For a model of very different depth, either scale proportionally or sweep:
 
@@ -51,14 +52,12 @@ for L in 8 10 12 14 16; do
 done
 ```
 
-`main.py fit` will refuse to run if the requested layer exceeds the model's
-depth rather than silently clamping.
+`main.py fit` reports an error if a requested layer exceeds the model depth.
 
-## 3. Where the image is in the sequence
+### 3. Visual-token span
 
-This is the only step that genuinely requires knowing the architecture. The
-hook needs `(vis_start, vis_end)`: the slice of the hidden-state sequence
-occupied by visual tokens. Everything before and after it is treated as text.
+The hook needs `(vis_start, vis_end)`, the hidden-state slice occupied by visual
+tokens. Everything before and after this slice is treated as text.
 
 Add a finder to `centroid_erasure/visual_tokens.py`:
 
@@ -83,19 +82,17 @@ Two patterns cover almost everything:
   hidden state is longer than `input_ids`. The marker locates the start; the
   length difference determines the expanded visual-token count.
 
-### Three registry keys have no validated finder
+#### Registry entries without validated span finders
 
 `qwen2_vl`, `internvl3_8b` and `internvl35_8b` are loadable but have no
-visual-token finder, so they fail closed and cannot be presented as validated
-measurements. `--allow-visual-span-fallback` exposes the historical positional
-heuristic for debugging only. Adding a real finder is reasonable, but
-empirically validate its marker locations and document the resulting protocol.
+validated visual-token finder. Measurements for these entries require the
+explicit `--allow-visual-span-fallback` exploratory option. For supported
+measurements, implement a finder, validate its marker locations, and document
+the resulting protocol.
 
-### Validate the span before trusting a run
+#### Validate the span
 
-If span detection throws, the hook refuses to run by default. This is
-intentional: a guessed visual span can produce plausible but meaningless
-numbers. Check one sample before a full run:
+Check one sample before starting a full run:
 
 ```python
 import torch
@@ -109,10 +106,10 @@ with torch.no_grad():
 print(find_visual_token_range("my_model", inputs["input_ids"], h, processor))
 ```
 
-The span should be a plausible visual token count for your image resolution
-(hundreds to low thousands), not something like `(10, 40)`.
+The span should contain a plausible number of visual tokens for the image
+resolution, typically hundreds to low thousands.
 
-## 4. Fit and run
+### 4. Fit and run
 
 ```
 python main.py fit     --model my_model --n 2000 --k 256
@@ -120,21 +117,19 @@ python main.py measure --model my_model
 python main.py tccd    --model my_model --protocol fixed
 ```
 
-## What to expect
+### Expected behavior
 
 The measurement transferred to every model tested in the paper: text erasure
 cost exceeded visual erasure cost on 37 of 42 (model, task) cells, with four
 exact ties and one reversal.
 
-The **intervention** transferred much less. Positive fixed-dose recovery is
-largely confined to BLINK and, for Qwen2.5-VL-7B, MMBench. In the 10 x 8
-breadth grid, only 2 of 80 cells had nominal, unadjusted p < .05 gains, while
-24 of 80 had nominal, unadjusted p < .05 harms. If TCCD does not help your
-model on your benchmark, that is consistent with the paper rather than a sign
-of a broken setup. Check the measurement first: the expected asymmetry is a
-useful diagnostic, not by itself proof that the entire pipeline is correct.
+The **intervention** transferred less consistently. Positive fixed-dose
+recovery is concentrated in BLINK and, for Qwen2.5-VL-7B, MMBench. In the
+10 × 8 breadth grid, 2 of 80 cells had nominal, unadjusted `p<.05` gains and
+24 had nominal, unadjusted `p<.05` losses. Evaluate the dependence
+measurement and intervention separately when adding a model.
 
-## Things that will bite you
+### Reproducibility considerations
 
 * **Harvest and fitting mismatch.** The released protocol fits on one fixed
   generic prompt (16 post-image tokens/image, 32,000 total) and applies the
@@ -142,8 +137,26 @@ useful diagnostic, not by itself proof that the entire pipeline is correct.
   template, image rendering, processor versions, K, and fitting backend when
   refitting. A separate sensitivity grid kept the generic prompt but used
   K=512 with `sklearn`, rather than the paper pipeline's K=256 with FAISS;
-  per-task deltas differed by up to ~4.5 pp. Compare like with like; the
+  per-task deltas differed by up to approximately 4.5 points. Compare runs
+  under matched fitting configurations; the
   backend is recorded in `bank.meta["backend"]`.
 * **`transformers` version.** The hook depends on decoder layers returning a
-  tuple whose first element is the hidden state. Version drift here is the most
-  common cause of a silent behaviour change. Pin it.
+  tuple whose first element is the hidden state. Use the pinned version when
+  comparing against the released results.
+
+## Adding a benchmark
+
+Add a loader under `centroid_erasure/data/` that returns
+`{task_name: [sample, ...]}`. Each sample is a dictionary with:
+
+* `prompt`: the model prompt;
+* `images`: a list of PIL images; and
+* `answer`: the correct answer letter.
+
+Connect the loader in `_load_samples()`, add its name to the `--benchmark`
+choices in `build_parser()`, and record its source, split, and revision in
+`_output_provenance()`, all in `main.py`.
+
+The current evaluation path scores single-token multiple-choice answers by
+taking the argmax over answer-letter logits. Free-form tasks require a
+task-specific generation and metric implementation.

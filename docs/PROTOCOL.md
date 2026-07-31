@@ -1,12 +1,12 @@
 # Protocol
 
-Everything needed to compare a run against the published one.
+Settings and interpretation for comparison with the published results.
 
 ## Centroid fitting
 
 | Setting | Value |
 |---|---|
-| Source data | MS-COCO, streamed from `detection-datasets/coco` revision `cf0b22332314a937e9dc8a1957b21725430bb41d`, **train** split, and shuffled with the data seed. Fitting is label- and evaluation-prompt-disjoint from BLINK; exact image-source overlap was not exhaustively audited. |
+| Source data | MS-COCO, streamed from `detection-datasets/coco` revision `cf0b22332314a937e9dc8a1957b21725430bb41d`, **train** split, and shuffled with the data seed. Fitting is label- and evaluation-prompt-disjoint from BLINK; image-source overlap was not assessed. |
 | Images | N = 2,000 |
 | Clusters | K = 256 |
 | Text harvest layer | L12 |
@@ -15,15 +15,15 @@ Everything needed to compare a run against the published one.
 | Text activations | 16 post-image tokens/image; 32,000 total |
 | Data seed | 1337 |
 | K-means seed | 42 |
-| Backend | The published banks were fit with FAISS-GPU (historical package version unrecorded). Both public fit paths verify a visible FAISS GPU, record the backend/version actually used, and otherwise use `sklearn.MiniBatchKMeans`; a fallback run is not a published-protocol match. |
+| Backend | The published banks were fitted with FAISS-GPU; its package version was not recorded. Public fit paths use FAISS only when a GPU is visible and otherwise use `sklearn.MiniBatchKMeans`, recording the selected backend and version. |
 
-The fitting CLI will not silently switch sources: alternate COCO mirrors require
-`--allow-coco-fallback`, and their banks are not paper reproductions. Newly
-fitted banks embed source/revision, model/revision, layers, prompt, package
-versions, seeds, backend, and span-fallback counts as JSON metadata.
+Alternate COCO mirrors require `--allow-coco-fallback`. Banks fitted from an
+alternate source do not match the paper protocol. New banks store the data and
+model revisions, layers, prompt, package versions, seeds, backend, and
+span-fallback counts as JSON metadata.
 
-The 30-cell N x K grid spans N in [1K, 50K] and K in [128, 2048]. Its mean
-oracle-best delta is 5.2% +/- 0.4% across cells, with no monotone trend.
+The 30-cell N × K grid spans N in [1K, 50K] and K in [128, 2048]. Its mean
+oracle-best delta is 5.2% ± 0.4% across cells, with no monotone trend.
 N = 2,000 and K = 256 are a low-compute point near the lower end, not the
 minimum; the grid supports broad robustness, not equivalence of every cell.
 
@@ -43,9 +43,8 @@ minimum; the grid supports broad robustness, not equivalence of every cell.
 * `alpha_interp = 0.0` → full collapse onto the centroid. **Maximum erasure.**
 * `alpha_interp = 1.0` → identity. **No erasure.**
 
-This is the opposite of "erasure strength", and it is an easy thing to invert
-by accident. The library asserts nothing about it, so if your effect has the
-wrong sign, check this first.
+`alpha_interp` is an interpolation coefficient rather than an erasure-strength
+coefficient: smaller values apply more replacement.
 
 ### Contrastive decoding direction
 
@@ -59,14 +58,13 @@ control, where accuracy falls on every task by 20.5 to 38.3 pp at
 
 ## Alpha selection protocols
 
-Three protocols are reported because they answer different questions, and
-mixing them up is the easiest way to overstate a result.
+The three protocols answer different evaluation questions:
 
-| Protocol | Selection | Honest reading |
+| Protocol | Selection | Interpretation |
 |---|---|---|
-| `fixed` | `alpha_interp = 0.4` everywhere | what a deployment would use |
+| `fixed` | `alpha_interp = 0.4` everywhere | deployment setting |
 | `cv` | leave-one-task-out cross-validation within the benchmark | held-out estimate, no per-task tuning |
-| `best` | argmax per task | **oracle upper bound, not deployable** |
+| `best` | argmax per task | **oracle upper bound** |
 
 ## Evaluation
 
@@ -87,16 +85,33 @@ to the intervention:
 This split is an empirical observation from the paper, not a property of the
 benchmark's own taxonomy.
 
+## Interpretation
+
+Centroid-replacement cost measures dependence on within-cluster activation
+structure. It is not a causal estimate of harmful semantic competition. In
+particular, full text replacement also removes structure used by the
+multiple-choice task interface. Five of the seven released models consequently
+collapse to a constant answer letter under full text replacement, producing the
+same task accuracies determined by the gold-label frequencies.
+
+The measurement condition uses full replacement (`alpha_interp=0.0`), while
+TCCD uses partial replacement (`alpha_interp=0.4`) so the model continues to
+answer. A matched-damage control remains an important direction for separating
+task-interface damage from modality-specific dependence.
+
+TCCD is task- and model-dependent. Leave-one-model-out selection over the seven
+released interpolation sweeps gives a mean held-out delta of -1.4% (two-sided
+Wilcoxon `p=0.22`); the release therefore does not recommend transferring one
+global alpha across models.
+
 ## Reproducibility notes
 
 * **Immutable upstream inputs.** The seven model commits and the BLINK/COCO
   dataset commits are recorded in `centroids/MANIFEST.json` and used by the
   loaders. The exact Python package versions are recorded there and in
-  `requirements.txt`; this includes preprocessing packages, not just torch and
-  transformers. One historical exception is explicit in the manifest: the
-  original fit's `faiss-gpu` package version was not logged. This does not
-  affect evaluation with the shipped banks, but byte-identical refitting is not
-  claimed.
+  `requirements.txt`, including preprocessing packages. The original
+  `faiss-gpu` package version is unavailable, so byte-identical refitting is not
+  claimed; this does not affect evaluation with the released banks.
 * **`faiss` vs `sklearn`** produce different centers. Matching the backend is
   necessary but not sufficient for a refit comparison: prompt rendering,
   preprocessing, data, K, seeds, and package versions must also match.
@@ -114,21 +129,12 @@ benchmark's own taxonomy.
   deviation of 1.83 pp. The post-hoc TEXT-COMPETES > TEXT-NEEDED group
   ordering held in all five refits. The other six models were not refit.
 
-## Deliberate divergences from the original working code
+## Release behavior
 
-Two release-specific clarifications are recorded here:
-
-1. **`parse_mc_answer` accepts A-H, not just A-D.** The original stopped at D,
-   so an answer like `(E)` returned `None` and the item scored wrong no matter
-   what the model said. Widening it can only turn a guaranteed-wrong item into
-   a scorable one. No published number moves, because every benchmark in the
-   paper has at most four options.
-
-2. **`find_visual_token_range` is not widened by guesswork.** `qwen2_vl`,
-   `internvl3_8b` and `internvl35_8b` have no validated finder and therefore
-   fail closed. Missing marker tokens also raise for a nominally supported
-   architecture. The historical positional heuristic is available only
-   through the clearly named `--allow-visual-span-fallback` opt-in, and outputs
-   from that path must not be reported as validated. Add and empirically
-   validate a real finder before extending the supported set; see
-   `docs/EXTENDING.md`.
+* `parse_mc_answer` accepts answer labels A–H, supporting extensions with more
+  than four options. The published benchmarks use at most four options.
+* `qwen2_vl`, `internvl3_8b`, and `internvl35_8b` do not have validated visual
+  span finders. They require the explicit `--allow-visual-span-fallback`
+  exploratory option until a finder is implemented and validated. Missing
+  marker tokens also raise an error for supported architectures. See
+  [`EXTENDING.md`](EXTENDING.md) for the extension procedure.

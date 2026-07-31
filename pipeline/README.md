@@ -3,8 +3,8 @@
 `paper_sweep.py` is the six-task, seven-model sweep behind the released
 centroid banks and Phase-2 fixtures. It fits a fresh text/visual centroid pair
 for every model, then runs centroid sufficiency, the interpolation sweep, and
-the segment ablation. It does not cover the paper's preliminary or auxiliary
-experiments.
+the segment ablation. Supplementary analyses are documented separately in
+`response_release/`.
 
 ## Paper protocol
 
@@ -18,8 +18,8 @@ The defaults fix the quantities that affect the reported results:
 - interpolation values 0.0–0.8, contrastive strength 1.0, and segment dose 0.4;
 - immutable model and remote-code revisions from the model registry.
 
-`--sanity` deliberately uses 400 COCO images and eight BLINK examples per
-task. The alpha, seed, and segment flags likewise create an alternate
+`--sanity` uses 400 COCO images and eight BLINK examples per task. The alpha,
+seed, and segment flags likewise create an alternate
 configuration; every selected value is stored in `config.json` and in result
 provenance.
 
@@ -54,10 +54,9 @@ and segment cell is present; an incompatible or incomplete result is refused.
 
 COCO fitting requires exactly the requested number of successful visual and
 text contributions. A full BLINK run requires the released count for every
-task. Visual-span detection fails closed unless
+task. A validated visual span is required unless
 `--allow_visual_span_fallback` is explicitly supplied. Any baseline or
-intervention failure aborts that model result—an intervention is never
-replaced by its baseline prediction.
+intervention failure aborts that model result.
 
 FAISS is used only when it reports a visible GPU and fitting succeeds.
 Otherwise the script uses `sklearn.MiniBatchKMeans` and records that actual
