@@ -31,6 +31,13 @@ The released aggregate record gives:
 - Flash-Lite: 81.0% sighted versus 44.3% blind.
 - Sighted inter-judge Cohen's kappa: 0.645.
 
+Released agreement numerators reconstruct every reported blind, sighted, and
+baseline-agreement fraction, as well as the raw inter-judge agreement
+(`65/79`). An exhaustive safe search found no retained redistributable 4x4
+paired-answer contingency table. Cohen's kappa is therefore preserved as a
+checksum-covered author-generated integrity aggregate, not described as
+independently recomputable from this release.
+
 Because ground truth defines the selected flip set, agreement with TCCD is
 also agreement with ground truth by construction. This analysis therefore
 tests image-dependence plausibility only. It does not independently establish

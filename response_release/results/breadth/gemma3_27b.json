@@ -97,6 +97,7 @@
       "vis_cost": 0.364
     }
   },
+  "scoring_status": {"mcqa": "historical_space_prefixed_answer_token_logit_variant", "mme": "retained_option_letter_free_binary_control"},
   "model": "gemma3_27b",
   "text_layer": 12,
   "vis_layer": 16

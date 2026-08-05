@@ -1,10 +1,3 @@
-<p align="center">
-:fire: Please remember to :star: this repo if you find it useful and cite our work if you end up using it in your work! :fire:
-</p>
-<p align="center">
-:fire: If you have any questions or concerns, please create an <a href="https://github.com/yahskapar/centroid-erasure/issues">issue</a> :memo:! :fire:
-</p>
-
 # :wave: Introduction
 
 **centroid-erasure** is the official code and artifact release for
@@ -136,6 +129,12 @@ internals affect the intervention. The FAISS-GPU version used for the original
 centroid fitting run was not recorded; this affects byte-identical refitting,
 but not evaluation with the released banks.
 
+The Python wheel is intentionally library-only. `main.py`, the demo, paper
+pipeline, fitted banks, fixtures, and response aggregates are repository
+artifacts; clone this repository to use those command-line and reproduction
+surfaces. Installing the wheel alone exposes only `centroid_erasure` and
+`centroid_erasure.data`.
+
 # :white_check_mark: Tests
 
 Install the test extra and run the CPU test suite:
@@ -143,6 +142,13 @@ Install the test extra and run the CPU test suite:
 ```bash
 pip install -e ".[test]"
 pytest
+```
+
+For aggregate-result recomputation without the test runner, install the
+reproduction extra instead:
+
+```bash
+pip install -e ".[reproduction]"
 ```
 
 The suite covers centroid artifacts, hooks and token spans, model and dataset
@@ -258,13 +264,19 @@ interpolation, and positional-segment sweeps. See
 [`pipeline/README.md`](pipeline/README.md) for runtime, resume behavior, and
 provenance.
 
-Camera-ready aggregate records can be verified with standard-library scripts:
+Camera-ready aggregate records can be verified with:
 
 ```bash
 python3 response_release/scripts/recompute_claims.py
+python3 response_release/scripts/recompute_statistics_specificity.py
 python3 response_release/scripts/recompute_variance.py
 python3 response_release/scripts/verify_release.py
 ```
+
+The claim, variance, and integrity scripts use only the Python standard
+library. The crossed-REML/Hake/specificity refit uses the scientific Python
+dependencies installed by the repository's test extra and is also exercised by
+the maintained CPU test suite.
 
 # :robot: Extending the Library
 

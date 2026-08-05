@@ -1,0 +1,12 @@
+{
+  "record_type":"implementation verification","command":"scripts/reproduce_core_result.sh","command_sha256":"633e9d8b677dbae108548c4a2727e8ae0768e150c5abfeb3b5c27615c60f40c7","model":"Qwen2.5-VL-7B-Instruct","model_revision":"cc594898137f460bfe9f0759e9844b3ce807cfb5","centroid_bank":"centroids/qwen.npz (shipped; no refit)","benchmark":"BLINK validation","benchmark_revision":"a3666eb249237ba3d5eca8db21176cc47967e040","n_total":771,
+  "environment":{"gpu":"NVIDIA RTX A6000 (48 GB)","torch":"2.6.0+cu124","transformers":"5.4.0","qwen_vl_utils":"0.0.14","runtime_minutes_approx":40,"peak_vram_gb_approx":46},
+  "task_rows": {
+    "Forensic_Detection":[132,0.2273,0.2273,-0.0227,-0.0227],"Visual_Similarity":[135,0.2889,0.2889,0.0593,0.0593],"Art_Style":[117,0.0855,0.0855,0.0085,0.0085],"Counting":[120,0.4083,0.4083,0.0167,0.0167],"Relative_Depth":[124,0.2742,0.2742,0.0161,0.0161],"Spatial_Relation":[143,0.3497,0.3497,0.0070,0.0070]
+  },
+  "task_row_fields":["n","reproduced_text_cost","paper_text_cost","reproduced_visual_cost","paper_visual_cost"],
+  "means":{"reproduced_text_cost":0.2723,"paper_text_cost":0.2723,"reproduced_visual_cost":0.0141,"paper_visual_cost":0.0142,"reproduced_asymmetry_ratio":19.3,"paper_asymmetry_ratio":19.2},
+  "deviations":{"evidence_status":"historical_provenance_only_not_recomputable_from_rounded_task_rows","largest_per_task_absolute":0.000050,"mean_text_cost_absolute":0.000015},
+  "acceptance_tolerances":{"per_task_items":2,"per_task_accuracy_range":[0.014,0.017],"mean_text_cost":0.010},
+  "scope":"A structured record of a full-split run with the public code and shipped bank; it is implementation verification, not an independent re-fit or new scientific experiment. Exact deviation fields are historical provenance only because the released task rows are rounded."
+}

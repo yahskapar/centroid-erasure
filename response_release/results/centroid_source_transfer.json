@@ -1,0 +1,16 @@
+{
+  "model": "Qwen2.5-VL-7B-Instruct",
+  "tasks": ["Forensic_Detection","Visual_Similarity","Art_Style","Counting","Relative_Depth","Spatial_Relation"],
+  "columns": {
+    "coco_phase2": [0.1136,0.1037,0.0684,0.0250,0.0161,0.0],
+    "text_competes_fit_preliminary": [0.0227,0.0074,0.0,0.0083,0.0403,-0.0140],
+    "text_needed_fit_preliminary": [0.0758,0.0296,0.0085,-0.0083,-0.0081,-0.0210],
+    "all_six_deep_dive_fit_preliminary": [0.0227,0.0074,0.0,0.0167,0.0,-0.0210]
+  },
+  "column_means": {"coco_phase2":0.05446666666666667,"text_competes_fit_preliminary":0.010783333333333335,"text_needed_fit_preliminary":0.012750000000000003,"all_six_deep_dive_fit_preliminary":0.0043},
+  "provenance": {
+    "coco_phase2": {"fit_images":2000,"centroids_k":256,"alpha_cd":1.0,"alpha_interp_selection":"oracle best alpha within each task","historical_source_sha256":"974136e88c0aedcecd3186457c5e28c4f3b0463aa0f2c8fb162fd92e6a7a973d"},
+    "task_derived_preliminary": {"centroids_k":512,"alpha_interp":0.4,"alpha_cd":0.65,"alpha_interp_selection":"fixed","historical_source_sha256":"2d87c3b8a5e4e2e0754dadd17f208bf5f5da2d8f0d906c7e989bd8f2e0b150b9","all_blink_legacy_identifier_means":"all six primary deep-dive BLINK tasks, not all fourteen BLINK tasks"}
+  },
+  "scope": "Composite descriptive transfer table. Fit size, K, pipeline, alpha_cd, and alpha_interp selection differ between the Phase-2 COCO and preliminary task-derived columns, so it is not a controlled causal comparison."
+}

@@ -4,6 +4,7 @@ from setuptools import find_packages, setup
 
 
 ROOT = Path(__file__).resolve().parent
+STATSMODELS_REQUIREMENT = "statsmodels==0.14.2"
 
 setup(
     name="centroid-erasure",
@@ -37,7 +38,10 @@ setup(
         "pandas==2.3.3",
     ],
     extras_require={
-        "test": ["pytest==8.4.2"],
+        # The repository-only aggregate statistics refit is not imported by
+        # the library wheel, but both reproducibility and tests exercise it.
+        "reproduction": [STATSMODELS_REQUIREMENT],
+        "test": ["pytest==8.4.2", STATSMODELS_REQUIREMENT],
         # Needed only by quantised registry entries such as MedGemma.
         "quantization": ["bitsandbytes==0.49.2"],
     },

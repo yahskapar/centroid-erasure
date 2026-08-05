@@ -19,6 +19,9 @@ tqdm==4.67.3
 huggingface-hub==1.8.0
 pandas==2.3.3
 
+# Required by the released crossed-REML/Hake/specificity refit.
+statsmodels==0.14.2
+
 # Optional. faiss-gpu makes centroid fitting much faster; without a visible
 # FAISS GPU the code falls back to sklearn MiniBatchKMeans, which gives
 # slightly different centers. The original fit's FAISS package version was

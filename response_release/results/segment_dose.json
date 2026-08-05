@@ -5,6 +5,35 @@
     "post_image_suffix30": "last 30% of the post-image tail",
     "pre_visual_prefix": "tokens before the visual span"
   },
+  "complete_four_span_union": {
+    "alpha_interp_order": [0.2, 0.3, 0.4, 0.6],
+    "text_competes_unweighted_mean_delta": {
+      "full_post_image": [0.0384, 0.005466666666666667, 0.0777, -0.04153333333333333],
+      "post_image_suffix30": [0.0487, 0.0551, -0.012633333333333331, -0.04256666666666667],
+      "post_image_prefix70": [-0.0171, -0.0147, -0.009, -0.006333333333333334],
+      "pre_visual_prefix": [0.013866666666666668, 0.021366666666666662, 0.0425, 0.0252]
+    },
+    "all_six_unweighted_mean_delta": {
+      "full_post_image": [-0.044199999999999996, -0.0502, 0.0327, -0.019116666666666667],
+      "post_image_suffix30": [-0.006033333333333335, -0.0015833333333333335, -0.0246, -0.02635],
+      "post_image_prefix70": [-0.011099999999999999, -0.012466666666666666, -0.007233333333333334, -0.0027666666666666673],
+      "pre_visual_prefix": [-0.0008166666666666657, 0.010866666666666665, 0.022633333333333335, 0.0138]
+    },
+    "post_image_suffix30_task_deltas": {
+      "Forensic_Detection": [0.0909,0.0833,0.0076,0.0],
+      "Visual_Similarity": [0.0296,0.0222,-0.037,-0.0593],
+      "Art_Style": [0.0256,0.0598,-0.0085,-0.0684],
+      "Counting": [-0.05,-0.05,0.0,-0.0083],
+      "Relative_Depth": [-0.0484,-0.0968,-0.0887,-0.0081],
+      "Spatial_Relation": [-0.0839,-0.028,-0.021,-0.014]
+    },
+    "source_union": {
+      "full_post_image": {"historical_source_sha256": "974136e88c0aedcecd3186457c5e28c4f3b0463aa0f2c8fb162fd92e6a7a973d", "record": "canonical Phase-2 alpha sweep"},
+      "post_image_suffix30": {"historical_source_sha256": "05ea34b221795c2773bb94ddb89282a6f1ad35476e4957ef6a9c24d80de50171", "record": "historical real-CD branch only; randomized null branches are not used as dose curves"},
+      "post_image_prefix70_and_pre_visual_prefix": {"historical_source_sha256": "beb38aa5217ddcc1119855efb258951f595d022022fc6efc5601bb92ea6effcf", "record": "dedicated segment-dose grid fill"}
+    },
+    "assertion_scope": "All four spans have exactly four task-complete dose means. The union is descriptive positional sensitivity, not semantic parsing or causal localization."
+  },
   "results": {
     "_summary": {
       "segment_alphas": [

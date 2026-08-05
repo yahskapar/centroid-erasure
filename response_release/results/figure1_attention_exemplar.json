@@ -1,0 +1,108 @@
+{
+  "schema_version": "4.0",
+  "record_type": "selected_qualitative_post_rope_attention_exemplar",
+  "metric_status": "actual_post_rope_attention_selected_exemplar",
+  "metric_definition": "Fraction of final answer-position attention mass assigned to the visual-token span after Qwen multimodal RoPE and the causal mask, averaged over 28 heads. The regular forward remains SDPA; selected layers are reconstructed with the Transformers 5.4.0 eager formula including its bf16 return cast.",
+  "example_selection": "The item, audit layers, and L22 display layer are inherited from the response-era Figure 1(a) exemplar and were not selected after the corrected post-RoPE rerun.",
+  "model": {
+    "id": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "revision": "cc594898137f460bfe9f0759e9844b3ce807cfb5",
+    "dtype": "bfloat16",
+    "torch": "2.6.0+cu124",
+    "transformers": "5.4.0"
+  },
+  "benchmark": {
+    "id": "BLINK-Benchmark/BLINK",
+    "revision": "a3666eb249237ba3d5eca8db21176cc47967e040",
+    "task": "Forensic_Detection",
+    "split": "val",
+    "zero_based_index": 17,
+    "item_id": "val_Forensic_Detection_18",
+    "ground_truth": "B"
+  },
+  "protocol": {
+    "text_layer": 12,
+    "attention_layers": [16, 20, 22],
+    "display_layer": 22,
+    "alpha_interp": 0.0,
+    "alpha_cd": 1.0,
+    "intervened_span": "full post-image tail",
+    "visual_token_range_half_open": [15, 1329],
+    "visual_token_count": 1314,
+    "image_grid_thw_before_merge": [1, 36, 146],
+    "visual_grid_after_merge": [1, 18, 73],
+    "centroid_sha256": "951c7dd5496013ac39e34bf88a777488be594ed56ac7b735f03a3cf273b061aa"
+  },
+  "original_pass": {
+    "prediction": "A",
+    "correct": false,
+    "per_layer_post_rope_visual_percent": {
+      "16": 2.8384802863001823,
+      "20": 3.8558103144168854,
+      "22": 3.631894662976265
+    },
+    "three_layer_mean_post_rope_visual_percent": 3.442061754564444
+  },
+  "replaced_reference_pass": {
+    "prediction": "A",
+    "correct": false,
+    "per_layer_post_rope_visual_percent": {
+      "16": 4.497856646776199,
+      "20": 9.425751119852066,
+      "22": 11.091514676809311
+    },
+    "three_layer_mean_post_rope_visual_percent": 8.338374147812525,
+    "heads_increasing_out_of_28": {
+      "16": 14,
+      "20": 15,
+      "22": 16
+    }
+  },
+  "post_rope_change": {
+    "per_layer_percentage_points": {
+      "16": 1.659376360476017,
+      "20": 5.569940805435181,
+      "22": 7.459620013833046
+    },
+    "three_layer_mean_percentage_points": 4.896312393248081,
+    "display_layer_ratio": 3.053919704741667
+  },
+  "tccd_output": {
+    "formula": "original + alpha_cd * (original - replaced_reference)",
+    "prediction": "B",
+    "correct": true,
+    "attention": null,
+    "attention_reason": "TCCD combines two logit vectors and is not a third attention-producing pass."
+  },
+  "rendering": {
+    "color_scale": "shared linear inferno scale clipped at the pooled 99th percentile",
+    "mapping": "The full 18x73 grid is first aligned to the horizontal model input and cropped at true source-image intervals. The four crops are rearranged 2x2 only for display, retaining within-image alignment but not cross-image adjacency.",
+    "paper_display_status": "The corrected-map construction is documented, but the maps and per-head arrays are not redistributed because the renderings use benchmark imagery. By final author design choice, the active Figure 1 artwork restores the response-era overlays as qualitative pre-RoPE QK proxies; the caption separates them from this corrected numerical audit."
+  },
+  "historical_pre_rope_audit_anchor": {
+    "status": "passed_not_used_as_attention_evidence",
+    "original_percent": {
+      "16": 3.9170701056718826,
+      "20": 5.750946328043938,
+      "22": 4.3503426015377045
+    },
+    "replaced_reference_percent": {
+      "16": 6.884706020355225,
+      "20": 10.390450060367584,
+      "22": 10.381324589252472
+    }
+  },
+  "provenance": {
+    "producer_sha256": "d3e720a89d87c521e050f5bf07a045a0d9c1e1844a2d96c283b950b0fa5d8716",
+    "full_result_sha256": "7c79d9412935808e3235047ef569990f6bd4616ff79b93d9853f0d27d08ba184",
+    "attention_arrays_sha256": "f5ae2c67fdfeda3831169bb4fa16a668a1574fb4f2f1431641c9f1cf17a2a17b",
+    "dataset_arrow_sha256": "f0c5a968c951749ee5fb9a2e0aff36de9ae6b888b625c9bef756cd80c220f37b"
+  },
+  "content_omitted": [
+    "benchmark images",
+    "prompt text",
+    "per-head vectors",
+    "full-vocabulary logits"
+  ],
+  "scope": "One selected descriptive exemplar. The increased attention belongs to the replaced reference pass, while the corrected answer belongs to TCCD's contrastive logit combination. It is not an aggregate effect estimate and does not establish a causal mechanism, attention as an explanation, or improved visual grounding."
+}

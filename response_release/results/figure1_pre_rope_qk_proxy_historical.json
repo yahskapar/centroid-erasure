@@ -1,0 +1,50 @@
+{
+  "schema_version": "3.0",
+  "record_type": "historical_pre_rope_qk_similarity_proxy",
+  "superseded_by": "figure1_attention_exemplar.json",
+  "model": "Qwen2.5-VL-7B-Instruct",
+  "benchmark": "BLINK validation split",
+  "example_selection": "selected qualitative exemplar published in Figure 1(a)",
+  "metric_status": "softmax_normalized_pre_rope_qk_similarity_proxy_not_actual_attention",
+  "current_artwork_status": "The original raster overlays are restored in Figure 1 only as qualitative QK proxies; corrected post-RoPE attention supplies the quantitative audit reported in the caption.",
+  "metric_definition": "The historical hook applies softmax to pre-RoPE q_proj/k_proj dot products and sums the proxy over the visual-token span; it does not recover the model's post-RoPE attention weights or attention mass.",
+  "item_identifier_released": false,
+  "visual_token_range": [15, 1329],
+  "alpha_interp": 0,
+  "alpha_cd": 1,
+  "qk_proxy_layers": [16, 20, 22],
+  "original_pass": {
+    "mean_visual_qk_proxy_percent": 4.67,
+    "per_layer_visual_qk_proxy_percent": {
+      "16": 3.92,
+      "20": 5.75,
+      "22": 4.35
+    },
+    "answer_status": "incorrect"
+  },
+  "replaced_reference_pass": {
+    "mean_visual_qk_proxy_percent": 9.22,
+    "per_layer_visual_qk_proxy_percent": {
+      "16": 6.88,
+      "20": 10.39,
+      "22": 10.38
+    },
+    "standalone_answer_retained": false
+  },
+  "tccd_output": {
+    "answer_status": "correct",
+    "changed_from_original": true,
+    "qk_proxy_source": "not applicable; TCCD combines original and replaced-reference logits"
+  },
+  "visual_qk_proxy_delta_percentage_points": 4.55,
+  "historical_source_sha256": "7e47fa9c0d6e95de6cff598fd1444bf764538dcf5f2d6522a4184b20db125a7a",
+  "content_omitted": [
+    "image",
+    "prompt",
+    "caption",
+    "task name",
+    "item index",
+    "ground-truth and prediction letters"
+  ],
+  "scope": "Historical numerical proxy record retained as an audit anchor; its raster overlays are restored only for qualitative presentation. The pre-RoPE QK proxy after replacement belongs to the replaced reference pass, whereas correctness after intervention belongs to the contrastively combined TCCD output. This is not actual attention, an aggregate effect estimate, or mechanism evidence."
+}

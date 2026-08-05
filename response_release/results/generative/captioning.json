@@ -3,6 +3,19 @@
   "partial": false,
   "per_image_records_released": false,
   "protocol_label": "text-centroid replacement during generation; not contrastive decoding",
+  "paired_object_recall_test": {
+    "test": "paired two-sided t-test over per-image recall differences (centroid-replaced generation minus baseline)",
+    "n": 2000,
+    "sum_delta": -58.36464646464646,
+    "sum_squared_delta": 102.9345538304088,
+    "mean_delta": -0.029182323232323233,
+    "sample_sd": 0.2250355292407822,
+    "standard_error": 0.005031947407350306,
+    "t_statistic": -5.799409427391033,
+    "df": 1999,
+    "two_sided_p": 7.717537998619713e-09,
+    "raw_per_image_scores_released": false
+  },
   "summary": {
     "baseline": {
       "avg_objects_mentioned": 1.5555,
@@ -14,7 +27,7 @@
     "delta_chair_i": -0.0012333333333333224,
     "delta_chair_s": -0.0030000000000000027,
     "delta_recall": -0.029182323232323282,
-    "tccd": {
+    "centroid_replaced_generation": {
       "avg_objects_mentioned": 1.442,
       "chair_i_mean": 0.09480000000000001,
       "chair_s": 0.176,

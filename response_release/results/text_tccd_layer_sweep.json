@@ -1,0 +1,14 @@
+{
+  "protocol": {"model":"Qwen2.5-VL-7B-Instruct","layers":[0,2,4,6,8,10,11,12,13,14,16,18,20,22,24,26],"centroid_bank_layer":12,"centroids_k":512,"fit_cache_images":11218,"fit_cache_tokens":179488,"alpha_interp":0.0,"alpha_cd":0.65,"intervened_span":"full post-image tail","n_total":771},
+  "historical_source_sha256": "e1f392dd2cd63bf765ac50b57c306b72356247162dab50ed41c78b0151b91bab",
+  "groups": {"text_competes":["Forensic_Detection","Visual_Similarity","Art_Style"],"text_needed":["Counting","Relative_Depth","Spatial_Relation"]},
+  "task_metadata": {"Forensic_Detection":[0.4773,132],"Visual_Similarity":[0.763,135],"Art_Style":[0.5556,117],"Counting":[0.6667,120],"Relative_Depth":[0.7903,124],"Spatial_Relation":[0.8881,143]},
+  "layer_deltas": {
+    "0":[0.0303,0.0148,0.0256,0.0,0.0,0.014],"2":[-0.0076,0.0,0.0,0.0,-0.0242,0.007],"4":[0.0833,0.0815,0.0769,-0.0417,-0.0323,-0.0699],"6":[0.0076,0.0889,0.0171,-0.0167,-0.0726,-0.0909],
+    "8":[-0.0076,0.0963,0.0598,-0.0583,-0.121,-0.1399],"10":[0.0076,0.0815,0.0342,-0.0417,-0.1129,-0.1189],"11":[0.0227,0.0815,0.0513,-0.05,-0.0403,-0.1049],"12":[-0.0076,0.0815,0.0427,-0.0417,-0.0806,-0.1189],
+    "13":[0.0227,0.0815,0.0342,-0.0417,-0.0968,-0.0979],"14":[-0.0076,0.0889,0.0513,-0.05,-0.1371,-0.1399],"16":[0.0455,0.0815,0.0256,-0.0167,-0.0323,-0.042],"18":[0.0152,0.0741,0.0598,-0.0333,-0.1048,-0.1049],
+    "20":[-0.0758,0.0667,0.0256,-0.0167,-0.1532,-0.0909],"22":[-0.0076,0.0889,0.0427,-0.025,-0.0484,0.0],"24":[0.0227,0.0074,-0.0171,0.0083,0.0,-0.007],"26":[0.0303,0.0,-0.0085,0.0,-0.0081,0.007]
+  },
+  "task_order_for_layer_deltas": ["Forensic_Detection","Visual_Similarity","Art_Style","Counting","Relative_Depth","Spatial_Relation"],
+  "scope": "Intervention-dependent layer sensitivity using an L12-fitted bank at every injection layer; the outcome-derived groups are post hoc and this does not independently validate a taxonomy or mechanism."
+}

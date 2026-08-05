@@ -55,7 +55,8 @@ def test_setup_metadata_contains_only_public_package_and_declared_extras(
         "centroid_erasure.data",
     ]
     assert captured["extras_require"] == {
-        "test": ["pytest==8.4.2"],
+        "reproduction": ["statsmodels==0.14.2"],
+        "test": ["pytest==8.4.2", "statsmodels==0.14.2"],
         "quantization": ["bitsandbytes==0.49.2"],
     }
     assert len(captured["install_requires"]) == len(

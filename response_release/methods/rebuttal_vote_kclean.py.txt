@@ -72,7 +72,8 @@ def sample_letter(logits, letter_token_ids, mode, gen):
 
     Three modes:
       'greedy' : argmax over letter tokens
-      'stoch'  : multinomial sample after temperature+top_p on letter subspace
+      'stoch'  : multinomial sample after temperature on the letter subspace;
+                 the configured TOP_P constant is not applied
     """
     letter_logits = torch.tensor(
         [logits[letter_token_ids[L]].item() for L in LETTERS],
@@ -84,7 +85,7 @@ def sample_letter(logits, letter_token_ids, mode, gen):
         # Plain temperature softmax over the 4 letters, NO top_p. top_p=0.9
         # mathematically truncates a 2-/4-way subspace to top-1 (any positive
         # gap on 2 letters -> [1.0, 0.0]), which zeroed sampling diversity on
-        # the binary tasks. The paper's self-consistency uses no top_p.
+        # the binary tasks. The released answer-logit resampling uses no top_p.
         probs = torch.softmax(letter_logits / TEMPERATURE, dim=-1)
         choice = torch.multinomial(probs, num_samples=1, generator=gen).item()
         return LETTERS[int(choice)]
@@ -237,7 +238,8 @@ def main():
 
     log(f"=== rebuttal_vote_kclean ({ts}) ===")
     log(f"voting_modes={args.voting_modes}  tasks={args.tasks}")
-    log(f"temperature={TEMPERATURE} top_p={TOP_P} seed={SEED} max_k={MAX_K}")
+    log(f"temperature={TEMPERATURE} applied_top_p=False "
+        f"recorded_unused_top_p={TOP_P} seed={SEED} max_k={MAX_K}")
 
     cfg = get_config(MODEL_KEY)
     model, processor, _ = load_model(MODEL_KEY)
@@ -250,7 +252,9 @@ def main():
     summary = {
         "config": {
             "model": MODEL_KEY, "temperature": TEMPERATURE,
-            "top_p": TOP_P, "seed": SEED, "max_k": MAX_K,
+            "top_p": None, "applied_top_p": False,
+            "recorded_unused_top_p": TOP_P,
+            "seed": SEED, "max_k": MAX_K,
             "vote_ks": VOTE_KS, "sanity": args.sanity,
         },
         "results": [],

@@ -20,6 +20,14 @@
     "tccd_lcd": 0.46,
     "tccd_vcd": 0.41
   },
+  "flip_indicator_contingency_tables": {
+    "orientation": "rows: TCCD unchanged/changed; columns: comparator unchanged/changed",
+    "tccd_lcd": {"table": [[1076,43],[25,32]], "phi": 0.459631963614793},
+    "tccd_vcd": {"table": [[1083,36],[31,26]], "phi": 0.4074252091718001},
+    "tccd_dola": {"table": [[1105,14],[25,32]], "phi": 0.6080250919443251},
+    "n_each": 1176,
+    "paired_prediction_letters_released": false
+  },
   "n": 1176,
   "omission_reason": "benchmark answer and prediction letters are not redistributed; only correctness aggregates are released",
   "paired_predictions_released": false,

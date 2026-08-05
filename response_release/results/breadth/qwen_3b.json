@@ -97,6 +97,7 @@
       "vis_cost": 0.16100000000000003
     }
   },
+  "scoring_status": {"mcqa": "historical_space_prefixed_answer_token_logit_variant", "mme": "retained_option_letter_free_binary_control"},
   "model": "qwen_3b",
   "text_layer": 12,
   "vis_layer": 16

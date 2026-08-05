@@ -5,7 +5,9 @@
     "sanity": false,
     "seed": 42,
     "temperature": 0.7,
-    "top_p": 0.9,
+    "top_p": null,
+    "applied_top_p": false,
+    "recorded_unused_top_p": 0.9,
     "vote_ks": [
       2,
       5,

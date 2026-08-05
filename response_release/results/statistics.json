@@ -1,63 +1,115 @@
 {
-  "hake_gain": {
-    "baseline_x_g_regression": {
-      "ci_95": [
-        -0.39289358821665316,
-        0.06064560876860059
-      ],
-      "intercept": 0.21465139054656948,
-      "p": 0.15882489075772965,
-      "predicted_g_at_baseline_0": 0.21465139054656948,
-      "predicted_g_at_baseline_1": 0.0485274008225432,
-      "se_slope": 0.11569877474113616,
-      "slope": -0.16612398972402628,
-      "t": -1.4358318840948077
-    },
-    "mean_gain": 0.10340131889486003,
-    "n": 42,
-    "p": 3.7644141989497966e-06,
-    "per_quartile": [
-      {
-        "baseline_hi": 0.5757,
-        "baseline_lo": 0.0,
-        "label": "Q1 (lowest baseline)",
-        "mean_g": 0.15950225382749386,
-        "n": 11,
-        "sd_g": 0.09457055897647955
-      },
-      {
-        "baseline_hi": 0.706,
-        "baseline_lo": 0.5757,
-        "label": "Q2",
-        "mean_g": 0.11102051804676187,
-        "n": 10,
-        "sd_g": 0.1590405471113267
-      },
-      {
-        "baseline_hi": 0.8112250000000001,
-        "baseline_lo": 0.706,
-        "label": "Q3",
-        "mean_g": 0.11032973189552353,
-        "n": 10,
-        "sd_g": 0.13652445081013503
-      },
-      {
-        "baseline_hi": 1.01,
-        "baseline_lo": 0.8112250000000001,
-        "label": "Q4 (highest baseline)",
-        "mean_g": 0.03407528200534853,
-        "n": 11,
-        "sd_g": 0.08536234174766108
-      }
+  "schema_version": "2.0",
+  "analysis_scope": {
+    "models": [
+      "qwen",
+      "qwen_3b",
+      "qwen3",
+      "qwen3_4b",
+      "internvl",
+      "llava_ov",
+      "idefics3"
     ],
-    "sd_gain": 0.1255472605615183,
-    "t": 5.337568758042401
+    "tasks": [
+      "Forensic_Detection",
+      "Visual_Similarity",
+      "Art_Style",
+      "Counting",
+      "Relative_Depth",
+      "Spatial_Relation"
+    ],
+    "n_model_task_cells": 42,
+    "response": "Within each model-task cell, the largest TCCD accuracy difference over that fixture's released alpha_interp grid.",
+    "selection_scope": "Oracle/post-selected within each model-task cell; all inference is nominal and descriptive.",
+    "public_inputs": "demo/fixtures/{model}_expected.json"
+  },
+  "hake_gain": {
+    "definition": "g = delta_best / (1 - baseline)",
+    "model_level_inference": {
+      "unit": "model",
+      "aggregation": "Compute g in each of six task cells, then take the unweighted mean within each model.",
+      "per_model_mean_gain": {
+        "qwen": 0.1600975100525728,
+        "qwen_3b": 0.1934303026782005,
+        "qwen3": 0.0375086142459585,
+        "qwen3_4b": -0.005955619314801479,
+        "internvl": 0.11040202496905482,
+        "llava_ov": 0.1369025068405902,
+        "idefics3": 0.09142389279244471
+      },
+      "n_models": 7,
+      "n_positive": 6,
+      "mean_gain": 0.10340131889486,
+      "sd_gain": 0.06944453744865178,
+      "test": "two-sided one-sample t-test of seven model means against zero",
+      "t": 3.939462844491808,
+      "df": 6,
+      "p": 0.007629335736470086,
+      "inferential_status": "Nominal small-sample model-level summary; oracle alpha selection and the observational model sample remain limitations."
+    },
+    "descriptive_cell_summary": {
+      "n_cells": 42,
+      "mean_gain": 0.10340131889486003,
+      "sd_gain": 0.1255472605615183,
+      "pooled_cell_test_status": "not used",
+      "pooled_cell_test_reason": "The 42 model-task cells reuse seven models and six tasks and are not independent inferential units.",
+      "baseline_x_g_regression": {
+        "status": "descriptive cell-level OLS only; no clustering-adjusted inferential claim",
+        "intercept": 0.21465139054656948,
+        "slope": -0.16612398972402628,
+        "se_slope": 0.11569877474113616,
+        "t": -1.4358318840948077,
+        "p": 0.15882489075772965,
+        "normal_wald_ci_95": [
+          -0.39289358821665316,
+          0.06064560876860059
+        ],
+        "predicted_g_at_baseline_0": 0.21465139054656948,
+        "predicted_g_at_baseline_1": 0.0485274008225432
+      },
+      "per_baseline_quartile": [
+        {
+          "baseline_hi": 0.5757,
+          "baseline_lo": 0.0,
+          "label": "Q1 (lowest baseline)",
+          "mean_g": 0.15950225382749386,
+          "n": 11,
+          "sd_g": 0.09457055897647955
+        },
+        {
+          "baseline_hi": 0.706,
+          "baseline_lo": 0.5757,
+          "label": "Q2",
+          "mean_g": 0.11102051804676187,
+          "n": 10,
+          "sd_g": 0.1590405471113267
+        },
+        {
+          "baseline_hi": 0.8112250000000001,
+          "baseline_lo": 0.706,
+          "label": "Q3",
+          "mean_g": 0.11032973189552353,
+          "n": 10,
+          "sd_g": 0.13652445081013503
+        },
+        {
+          "baseline_hi": 1.01,
+          "baseline_lo": 0.8112250000000001,
+          "label": "Q4 (highest baseline)",
+          "mean_g": 0.03407528200534853,
+          "n": 11,
+          "sd_g": 0.08536234174766108
+        }
+      ]
+    }
   },
   "lomo": {
     "mean_fixed04_delta": -0.0002547619047619036,
     "mean_lomo_delta": -0.01397142857142857,
     "mean_oracle_delta": 0.038695238095238095,
     "p_lomo_positive": 0.921875,
+    "p_lomo_two_sided": 0.21875,
+    "test": "exact Wilcoxon signed-rank test over seven held-out-model means",
     "per_fold": [
       {
         "fixed04_delta": 0.03270000000000001,
@@ -111,18 +163,79 @@
     ]
   },
   "mixed_effects": {
-    "label": "CORE-7 (reportable)",
+    "label": "CORE-7 crossed model/task (reportable)",
     "n": 42,
-    "p_slope": 0.0011896383607974254,
-    "r2_beyond_baseline": 0.8073700492010213,
-    "r2_conditional": 0.7565907947332927,
-    "r2_marginal": 0.19262995079897874,
-    "se_slope": 0.03801428583077906,
-    "slope": -0.12321771353411533,
-    "var_eps": 0.0005242821589716386,
-    "var_fixed": 0.0004149080819553642,
-    "var_model": 0.00020941560534303138,
-    "var_task": 0.0010053067734157098,
-    "var_total": 0.002153912619685744
+    "n_models": 7,
+    "n_tasks": 6,
+    "formula": "delta_best ~ baseline + (1 | model) + (1 | task)",
+    "crossed_design": true,
+    "implementation": {
+      "library": "statsmodels.formula.api.mixedlm",
+      "package_versions": {
+        "numpy": "1.26.4",
+        "pandas": "3.0.1",
+        "scipy": "1.13.1",
+        "statsmodels": "0.14.2"
+      },
+      "python": "3.12.4",
+      "groups": "one constant top-level group for all 42 cells",
+      "re_formula": "0",
+      "vc_formula": {
+        "model": "0+C(model)",
+        "task": "0+C(task)"
+      },
+      "fit": "restricted maximum likelihood",
+      "optimizer": "L-BFGS",
+      "converged": true,
+      "optimizer_warning": "The MLE may be on the boundary of the parameter space.",
+      "warning_context": "The estimated model-intercept variance is small; BFGS and Powell sensitivity fits converge to the same reported fixed effect."
+    },
+    "intercept": 0.18115674061130768,
+    "slope": -0.212730408427429,
+    "se_slope": 0.05218575320564559,
+    "wald_z": -4.076407742724987,
+    "p_slope": 4.57367898708826e-05,
+    "p_label": "nominal two-sided Wald z p-value",
+    "var_fixed": 0.0012367011113198177,
+    "var_model": 0.00016029156769423454,
+    "var_task": 0.0008995244252559774,
+    "var_eps": 0.000969791201035004,
+    "var_total": 0.0032663083053050337,
+    "r2_marginal": 0.37862350878244017,
+    "r2_conditional": 0.7030925710656585,
+    "log_likelihood": 73.40404955909408,
+    "sensitivity": {
+      "maximum_likelihood_lbfgs": {
+        "converged": true,
+        "slope": -0.20635337877199642,
+        "se_slope": 0.05157746089536902,
+        "p_slope": 6.311693944797283e-05,
+        "r2_marginal": 0.3947912666875486,
+        "r2_conditional": 0.6753598232287024
+      },
+      "reml_bfgs": {
+        "converged": true,
+        "slope": -0.21273102705060637,
+        "se_slope": 0.05218565813949329,
+        "p_slope": 4.573299953404633e-05,
+        "r2_marginal": 0.3786252246142467
+      },
+      "reml_powell": {
+        "converged": true,
+        "slope": -0.21273081536004898,
+        "se_slope": 0.0521857869942636,
+        "p_slope": 4.573577573738577e-05,
+        "r2_marginal": 0.3786228213183022
+      }
+    },
+    "interpretive_scope": "The inverse association is descriptive. Baseline accuracy is part of a baseline-subtracted, oracle-selected response; neither the residual nor one-minus-marginal-R2 identifies modal competition or a causal training effect.",
+    "superseded_non_crossed_fit": {
+      "status": "not reportable",
+      "reason": "Using model as the top-level groups argument and task as a variance component constructs task indicators separately inside each model group, rather than one shared crossed task effect.",
+      "slope": -0.12321771353411533,
+      "se_slope": 0.03801428583077906,
+      "p_slope": 0.0011896383607974254,
+      "r2_marginal": 0.19262995079897874
+    }
   }
 }

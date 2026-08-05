@@ -34,7 +34,14 @@
       "format": "binary",
       "n": 1000,
       "text_cost": 0.357,
-      "vis_cost": -0.0010000000000000009
+      "vis_cost": -0.0010000000000000009,
+      "binary_class_control": {
+        "class_counts": {"yes": 500, "no": 500},
+        "baseline": {"yes_prediction_rate": 0.459, "yes_accuracy": 0.816, "no_accuracy": 0.898, "balanced_accuracy": 0.857},
+        "text_replacement": {"yes_prediction_rate": 0.01, "yes_accuracy": 0.01, "no_accuracy": 0.99, "balanced_accuracy": 0.5},
+        "visual_replacement": {"yes_prediction_rate": 0.46, "yes_accuracy": 0.818, "no_accuracy": 0.898, "balanced_accuracy": 0.858},
+        "scope": "Option-letter-free binary control. It rules out an A/B/C/D answer-letter space and a fixed yes bias as sufficient explanations, but does not rule out an intervention-induced default-to-no response or disruption of the question-defined visual predicate."
+      }
     },
     "mmstar": {
       "asymmetry": 25.99999999999998,
@@ -97,6 +104,7 @@
       "vis_cost": 0.0
     }
   },
+  "scoring_status": {"mcqa": "historical_space_prefixed_answer_token_logit_variant", "mme": "retained_option_letter_free_binary_control"},
   "model": "qwen",
   "text_layer": 12,
   "vis_layer": 16

@@ -1,59 +1,90 @@
 {
+  "scoring_status": {
+    "mcqa": {
+      "status": "historical_space_prefixed_answer_token_logit_variant",
+      "benchmarks": ["aokvqa", "seedbench", "scienceqa_img", "realworldqa", "mmstar", "cvbench", "mmvp"],
+      "cells": 70,
+      "nonchance_cells": 60,
+      "scope": "Audit history only: these response-run values score single-token space-prefixed answer labels and are not protocol-matched to the canonical bare continuation-label scorer."
+    },
+    "mme": {
+      "status": "retained_option_letter_free_binary_control",
+      "benchmark": "mme",
+      "cells": 10,
+      "scoring": "Maximum next-token logit over yes/no surface-form token IDs, independent of A/B/C/D answer-token choice.",
+      "directional_summary": "Text cost exceeds visual cost in nine model cells and ties in one."
+    }
+  },
   "excluded_model": {
     "model": "qwen2_vl",
     "reason": "unsupported visual-span fallback"
+  },
+  "checkpoint_provenance": {
+    "pinned_core_records": ["qwen", "qwen_3b", "qwen3", "qwen3_4b", "internvl", "llava_ov", "idefics3"],
+    "historical_unpinned_records": {
+      "gemma3": "google/gemma-3-4b-it",
+      "gemma3_12b": "google/gemma-3-12b-it",
+      "gemma3_27b": "google/gemma-3-27b-it"
+    },
+    "limitation": "The three supplemental Gemma-3 runs record the exact model IDs but not immutable checkpoint revisions; the historical producer loaded the distributor default revision available at run time."
+  },
+  "paired_inference_evidence": {
+    "status": "integrity_only_author_generated_aggregate",
+    "available": "Per-cell historical p-values and aggregate counts of 2/80 nominal positive and 24/80 nominal negative cells.",
+    "unavailable_after_exhaustive_safe_artifact_search": "Per-cell McNemar discordance b/c counts or a redistributable paired-prediction table for this response-run breadth grid.",
+    "restriction": "The release recomputes the counts from stored historical p-values but does not claim to independently reconstruct those p-values. No benchmark-linked predictions are redistributed."
   },
   "models": [
     {
       "model": "gemma3",
       "path": "breadth/gemma3.json",
-      "sha256": "743c749eda894d58531eba1597d8c24f3b8fdebb3cc05778499efb32c44dc007"
+      "sha256": "a8a78a9d69a36317e7f50d05bcca28cb673438f795563207404d11d61f194250"
     },
     {
       "model": "gemma3_12b",
       "path": "breadth/gemma3_12b.json",
-      "sha256": "a8aabb69be123edd5fab92ab04be51f72d299bae59777988184ce50bf286a85d"
+      "sha256": "36383bfc5765678211bc976182af48bc5c16e5975200c02c2078ab226279df40"
     },
     {
       "model": "gemma3_27b",
       "path": "breadth/gemma3_27b.json",
-      "sha256": "29699f922ee6821b7cec87bc5526035a255949786b79eafab6d62b6818790c3f"
+      "sha256": "a413f45f74772e14a03ce4e4f8d5f43cc4738cfeaa4260c4d5466835ab8ef287"
     },
     {
       "model": "idefics3",
       "path": "breadth/idefics3.json",
-      "sha256": "0a76a22450ed6e9e41fb251796e1c4147d01c18a3ddf1328a9e6f1b6bab09206"
+      "sha256": "f4aa6f0a51983167df8b6439e0d14a183113e61b36ccf258729554efd3e96ca1"
     },
     {
       "model": "internvl",
       "path": "breadth/internvl.json",
-      "sha256": "b1f44e4a7a39b590cf57a25456e7eac871f16816a4596009c6acfdb32ed7a9c9"
+      "sha256": "8a44b529bacb7a89f783c3d968bbc9864fa9356699a5c72c0f8b7cd5c4158c93"
     },
     {
       "model": "llava_ov",
       "path": "breadth/llava_ov.json",
-      "sha256": "3c1cbc5481947c749dd40f49c7e164c4c13391feff1ffefae9ff38819f7b9f74"
+      "sha256": "8ac7fa8be87f6d6e85760f8522431ead00968ab6999fd7748918aea45ec4c50b"
     },
     {
       "model": "qwen",
       "path": "breadth/qwen.json",
-      "sha256": "5117e1b3c0e4444d152590cdd4e686c783f493131a82baebdf165246dbb243ff"
+      "sha256": "f851e0a2ba0fce9db889ed5252f049c225ace3b2bcf72d534b837aca1e4e333f"
     },
     {
       "model": "qwen3",
       "path": "breadth/qwen3.json",
-      "sha256": "334832d77b5d7f5941d70d81f881001ffe519d2f01b50a0f20ea96734e8af47f"
+      "sha256": "ae396bc9f436defd17a8fe45a202863054fbd9a224c8a6891da3f01d512c3f0a"
     },
     {
       "model": "qwen3_4b",
       "path": "breadth/qwen3_4b.json",
-      "sha256": "ef961bb3295b47b0e047d990202d046bfdf62d27f0114d412aaab09522974053"
+      "sha256": "1c81f4fab570a56cb700954395e0ecf21fe3419857a1a05d2559437ec37d4f9e"
     },
     {
       "model": "qwen_3b",
       "path": "breadth/qwen_3b.json",
-      "sha256": "3804aad515cdeec1781db8d5c9273c2c84b08bd526549cf589830e0c6c27cd14"
+      "sha256": "0d431a2c2891a0f68e26f624c56de68c90a7f9ec7e0fc877611dc8d5a427b428"
     }
   ],
-  "status": "retained"
+  "status": "historical_mcqa_scoring_variant_with_retained_mme_binary_control"
 }

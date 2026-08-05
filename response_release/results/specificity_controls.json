@@ -1,0 +1,183 @@
+{
+  "schema_version": "1.0",
+  "primary_equal_norm_random_direction": {
+    "status": "primary fixed-protocol specificity comparison",
+    "protocol": {
+      "model": "Qwen2.5-VL-7B",
+      "model_key": "qwen",
+      "benchmark": "BLINK validation split",
+      "tasks_in_order": [
+        "Forensic_Detection",
+        "Visual_Similarity",
+        "Art_Style",
+        "Counting",
+        "Relative_Depth",
+        "Spatial_Relation"
+      ],
+      "text_competes_tasks": [
+        "Forensic_Detection",
+        "Visual_Similarity",
+        "Art_Style"
+      ],
+      "n_total": 771,
+      "text_layer": 12,
+      "text_span": "full post-image tail",
+      "alpha_interp": 0.4,
+      "alpha_cd": 1.0,
+      "centroid_bank": {
+        "source": "Phase-2 held-out bank",
+        "n_fit_images": 2000,
+        "k": 256,
+        "hidden_width": 3584,
+        "historical_sha256": "951c7dd5496013ac39e34bf88a777488be594ed56ac7b735f03a3cf273b061aa"
+      },
+      "decoding": "greedy answer-token scoring",
+      "aggregation": "unweighted mean of task-level accuracy differences",
+      "randomness": {
+        "torch_seed": 42,
+        "seeding_point": "set once immediately before the six-task run",
+        "draw_schedule": "one random direction per eligible token and sample, consumed in the recorded deterministic task/sample order",
+        "replicates": 1
+      }
+    },
+    "matched_random_construction": {
+      "real_reference": "mu_k + alpha_interp * (x - mu_k), where mu_k is the nearest released text centroid",
+      "random_reference": "x - u * ||x - mu_k||_2, where u is an isotropic random unit vector",
+      "real_displacement": "-(1 - alpha_interp) * (x - mu_k)",
+      "random_displacement": "-(1 - alpha_interp) * u * ||x - mu_k||_2",
+      "matching_guarantee": "For every eligible token, real and random reference displacements have exactly equal L2 norm before dtype conversion and receive the same (1-alpha_interp) scale.",
+      "difference": "The directions differ: nearest-centroid residual versus an isotropic random direction."
+    },
+    "per_task": {
+      "Forensic_Detection": {
+        "n": 132,
+        "baseline_accuracy": 0.4772727272727273,
+        "real_tccd_accuracy": 0.553030303030303,
+        "real_delta": 0.07575757575757569,
+        "matched_random_tccd_accuracy": 0.4621212121212121,
+        "matched_random_delta": -0.015151515151515194
+      },
+      "Visual_Similarity": {
+        "n": 135,
+        "baseline_accuracy": 0.762962962962963,
+        "real_tccd_accuracy": 0.8518518518518519,
+        "real_delta": 0.0888888888888889,
+        "matched_random_tccd_accuracy": 0.7851851851851852,
+        "matched_random_delta": 0.022222222222222254
+      },
+      "Art_Style": {
+        "n": 117,
+        "baseline_accuracy": 0.5555555555555556,
+        "real_tccd_accuracy": 0.6239316239316239,
+        "real_delta": 0.06837606837606836,
+        "matched_random_tccd_accuracy": 0.5555555555555556,
+        "matched_random_delta": 0.0
+      },
+      "Counting": {
+        "n": 120,
+        "baseline_accuracy": 0.6666666666666666,
+        "real_tccd_accuracy": 0.675,
+        "real_delta": 0.008333333333333415,
+        "matched_random_tccd_accuracy": 0.7083333333333334,
+        "matched_random_delta": 0.04166666666666674
+      },
+      "Relative_Depth": {
+        "n": 124,
+        "baseline_accuracy": 0.7903225806451613,
+        "real_tccd_accuracy": 0.7661290322580645,
+        "real_delta": -0.024193548387096753,
+        "matched_random_tccd_accuracy": 0.8145161290322581,
+        "matched_random_delta": 0.024193548387096864
+      },
+      "Spatial_Relation": {
+        "n": 143,
+        "baseline_accuracy": 0.8881118881118881,
+        "real_tccd_accuracy": 0.8671328671328671,
+        "real_delta": -0.020979020979021046,
+        "matched_random_tccd_accuracy": 0.8391608391608392,
+        "matched_random_delta": -0.04895104895104896
+      }
+    },
+    "summary": {
+      "text_competes": {
+        "real_tccd_mean_delta_pp": 7.767417767417766,
+        "matched_random_mean_delta_pp": 0.23569023569023537,
+        "rounded_paper_values_pp": [
+          7.77,
+          0.24
+        ]
+      },
+      "all_six": {
+        "real_tccd_mean_delta_pp": 3.2697216164958096,
+        "matched_random_mean_delta_pp": 0.3996645528903618,
+        "rounded_paper_values_pp": [
+          3.27,
+          0.4
+        ]
+      }
+    },
+    "claim_scope": "This one-seed, one-comparator result supports sensitivity to the tested perturbation direction at equal per-token displacement norm. It does not establish that K-means geometry is uniquely necessary, identify a mechanism, or provide a randomized-control dose curve.",
+    "archival_provenance": {
+      "run_id": "v3_alert_precision_20260419_190259",
+      "producer": "experiments_A6000/v3_alert_precision.py",
+      "historical_result_sha256": "58ad33a4164bae6e558f04c78d662f26104d54b62f1a042029d1b5a1394f7127",
+      "historical_producer_sha256": "d6d0619b9290380a29189133721b72ea917f48d4c68509de91303e2eebd8ae92"
+    }
+  },
+  "archival_options_only_three_controls": {
+    "status": "historical integrity record; not primary specificity evidence",
+    "protocol": {
+      "model": "Qwen2.5-VL-7B",
+      "benchmark": "BLINK validation split",
+      "text_layer": 12,
+      "text_span": "final 30% of the post-image tail (historically labeled options)",
+      "alpha_cd": 1.0,
+      "selected_nominal_alpha_interp": 0.3,
+      "aggregation": "unweighted mean of rounded task-level accuracy differences over the three TEXT-COMPETES tasks"
+    },
+    "text_competes_per_task_delta": {
+      "Forensic_Detection": {
+        "real_tccd": 0.0833,
+        "full_residual_norm_gaussian": -0.0303,
+        "fixed_random_projection": -0.0909,
+        "random_centroid_assignment": -0.0303
+      },
+      "Visual_Similarity": {
+        "real_tccd": 0.0222,
+        "full_residual_norm_gaussian": 0.0222,
+        "fixed_random_projection": -0.0519,
+        "random_centroid_assignment": 0.0296
+      },
+      "Art_Style": {
+        "real_tccd": 0.0598,
+        "full_residual_norm_gaussian": 0.0256,
+        "fixed_random_projection": -0.0342,
+        "random_centroid_assignment": 0.0
+      }
+    },
+    "text_competes_mean_delta_pp": {
+      "real_tccd": 5.51,
+      "full_residual_norm_gaussian": 0.58,
+      "fixed_random_projection": -5.9,
+      "random_centroid_assignment": -0.02
+    },
+    "implementation_audit": {
+      "real_tccd": "The real branch uses the supplied alpha_interp=0.3.",
+      "full_residual_norm_gaussian": "The historical matched-noise label uses the full alpha_interp=0 nearest-centroid residual norm, ignores the supplied nominal alpha, and calls torch.randn_like without pinning the Torch RNG in this producer.",
+      "fixed_random_projection": "The branch projects onto a seed-42 dictionary of random unit directions scaled to the original token norm; it ignores the supplied nominal alpha.",
+      "random_centroid_assignment": "The branch replaces tokens with randomly selected centroids, ignores the supplied nominal alpha, and does not pass its seeded generator to torch.randint.",
+      "nominal_sweep_status": "The alternative-control rows at different nominal alpha values are alpha-independent constructions (with fresh unpinned draws for two branches), not dose-response curves."
+    },
+    "usage_restrictions": [
+      "Do not call the alternatives dose-matched to real TCCD.",
+      "Do not plot or interpret the alternative rows as alpha dose-response curves.",
+      "Do not use this record to claim that perturbation magnitude alone was ruled out or that K-means geometry is uniquely necessary."
+    ],
+    "archival_provenance": {
+      "run_id": "rebuttal_qwen7b_full_20260412_212206",
+      "producer": "experiments_A6000/rebuttal_qwen7b_bundle.py",
+      "historical_result_sha256": "05ea34b221795c2773bb94ddb89282a6f1ad35476e4957ef6a9c24d80de50171",
+      "historical_producer_sha256": "f55c9248ee17785cdb4915f2985481c3465b181aac97df20de802b38b6335f84"
+    }
+  }
+}

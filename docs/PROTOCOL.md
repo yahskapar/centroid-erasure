@@ -22,8 +22,8 @@ alternate source do not match the paper protocol. New banks store the data and
 model revisions, layers, prompt, package versions, seeds, backend, and
 span-fallback counts as JSON metadata.
 
-The 30-cell N × K grid spans N in [1K, 50K] and K in [128, 2048]. Its mean
-oracle-best delta is 5.2% ± 0.4% across cells, with no monotone trend.
+The 30-cell N × K grid spans N in [1,000, 50,000] and K in [128, 2,048]. Its mean
+oracle-best delta is 5.2 ± 0.4 pp across cells, with no monotone trend.
 N = 2,000 and K = 256 are a low-compute point near the lower end, not the
 minimum; the grid supports broad robustness, not equivalence of every cell.
 
@@ -54,7 +54,7 @@ The reference is the **erased** pass, not the clean one. Positive `alpha_cd`
 pushes away from what the erasure produced. Negative `alpha_cd` pushes toward
 it, amplifying text competition; the paper reports this as a dose-response
 control, where accuracy falls on every task by 20.5 to 38.3 pp at
-`alpha_cd = -1.0`.
+`alpha_cd = -1.0` in the separately labeled preliminary K=512 sensitivity run.
 
 ## Alpha selection protocols
 
@@ -90,9 +90,10 @@ benchmark's own taxonomy.
 Centroid-replacement cost measures dependence on within-cluster activation
 structure. It is not a causal estimate of harmful semantic competition. In
 particular, full text replacement also removes structure used by the
-multiple-choice task interface. Five of the seven released models consequently
-collapse to a constant answer letter under full text replacement, producing the
-same task accuracies determined by the gold-label frequencies.
+multiple-choice task interface and can induce degenerate answer behavior. The
+retained aggregate outputs do not include the per-model prediction-letter
+histograms needed to audit the earlier exact constant-answer count, so the
+release does not make that auxiliary numerical claim.
 
 The measurement condition uses full replacement (`alpha_interp=0.0`), while
 TCCD uses partial replacement (`alpha_interp=0.4`) so the model continues to
@@ -100,7 +101,7 @@ answer. A matched-damage control remains an important direction for separating
 task-interface damage from modality-specific dependence.
 
 TCCD is task- and model-dependent. Leave-one-model-out selection over the seven
-released interpolation sweeps gives a mean held-out delta of -1.4% (two-sided
+released interpolation sweeps gives a mean held-out delta of -1.4 pp (two-sided
 Wilcoxon `p=0.22`); the release therefore does not recommend transferring one
 global alpha across models.
 

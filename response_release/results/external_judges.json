@@ -2,12 +2,17 @@
   "inter_judge": {
     "gemini-3.1-pro-preview__vs__gemini-3.1-flash-lite": {
       "cohen_kappa": 0.6449438202247192,
-      "raw_agreement": 0.8227848101265823
+      "raw_agreement": 0.8227848101265823,
+      "raw_agreement_count": 65,
+      "n": 79,
+      "kappa_evidence_status": "integrity_only_author_generated_aggregate",
+      "missing_sufficient_statistic": "The paired 4x4 sighted-answer contingency table was not retained in a safely releasable aggregate artifact; kappa cannot be independently reconstructed from the released marginal summaries."
     }
   },
   "judges": {
     "gemini-3.1-flash-lite": {
       "blink": {
+        "agreement_counts": {"blind_tccd": 19, "sighted_tccd": 29, "sighted_baseline": 5},
         "blind_agree_GT": 0.5135135135135135,
         "blind_agree_TCCD": 0.5135135135135135,
         "blind_agree_TCCD_ci": [
@@ -26,6 +31,7 @@
         "unparseable_frac": 0.0
       },
       "mmbench": {
+        "agreement_counts": {"blind_tccd": 16, "sighted_tccd": 35, "sighted_baseline": 3},
         "blind_agree_GT": 0.38095238095238093,
         "blind_agree_TCCD": 0.38095238095238093,
         "blind_agree_TCCD_ci": [
@@ -44,6 +50,7 @@
         "unparseable_frac": 0.0
       },
       "pooled": {
+        "agreement_counts": {"blind_tccd": 35, "sighted_tccd": 64, "sighted_baseline": 8},
         "blind_agree_GT": 0.4430379746835443,
         "blind_agree_TCCD": 0.4430379746835443,
         "blind_agree_TCCD_ci": [
@@ -64,6 +71,7 @@
     },
     "gemini-3.1-pro-preview": {
       "blink": {
+        "agreement_counts": {"blind_tccd": 20, "sighted_tccd": 36, "sighted_baseline": 1},
         "blind_agree_GT": 0.5405405405405406,
         "blind_agree_TCCD": 0.5405405405405406,
         "blind_agree_TCCD_ci": [
@@ -82,6 +90,7 @@
         "unparseable_frac": 0.0
       },
       "mmbench": {
+        "agreement_counts": {"blind_tccd": 18, "sighted_tccd": 38, "sighted_baseline": 3},
         "blind_agree_GT": 0.42857142857142855,
         "blind_agree_TCCD": 0.42857142857142855,
         "blind_agree_TCCD_ci": [
@@ -100,6 +109,7 @@
         "unparseable_frac": 0.0
       },
       "pooled": {
+        "agreement_counts": {"blind_tccd": 38, "sighted_tccd": 74, "sighted_baseline": 4},
         "blind_agree_GT": 0.4810126582278481,
         "blind_agree_TCCD": 0.4810126582278481,
         "blind_agree_TCCD_ci": [

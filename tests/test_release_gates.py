@@ -24,6 +24,10 @@ import pytest
             "response_release/scripts/recompute_variance.py",
             "cross_harness:",
         ),
+        (
+            "response_release/scripts/recompute_statistics_specificity.py",
+            "crossed REML: PASS",
+        ),
     ],
 )
 def test_cpu_only_release_gate_passes(repo_root, script, success_marker):

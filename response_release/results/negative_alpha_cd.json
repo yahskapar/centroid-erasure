@@ -1,0 +1,23 @@
+{
+  "model": "Qwen2.5-VL-7B-Instruct",
+  "protocol": {
+    "tasks": 6,
+    "n_total": 771,
+    "text_layer": 12,
+    "centroids_k": 512,
+    "fit_cache": {"split_label": "heldout", "images": 11218, "tokens": 179488, "historical_bank_record_sha256": "af5a23ab19c0cb4dc23ea6daa3a954a1ed595e59d2437f1d0279bb369c89392b"},
+    "alpha_interp": 0.4,
+    "alpha_cd_grid": [-1.0, -0.65, -0.3, 0.0, 0.3, 0.65, 1.0, 1.5]
+  },
+  "historical_source_sha256": "26fd4d93c3c6919b951dc1304bff4a71125e53884d9cf4286a772d54eb59d7bd",
+  "task_rows": {
+    "Art_Style": {"baseline": 0.5556, "n": 117, "deltas": [-0.2051,-0.1026,-0.0256,0.0,0.0171,0.0256,0.0342,0.0684]},
+    "Counting": {"baseline": 0.6667, "n": 120, "deltas": [-0.3833,-0.0583,0.0083,0.0,0.0,0.025,0.025,0.0167]},
+    "Forensic_Detection": {"baseline": 0.4773, "n": 132, "deltas": [-0.2273,-0.1894,-0.0682,0.0,0.0606,0.1364,0.1288,0.0909]},
+    "Relative_Depth": {"baseline": 0.7903, "n": 124, "deltas": [-0.2984,-0.1048,-0.0081,0.0,0.0161,0.0161,0.0081,0.0161]},
+    "Spatial_Relation": {"baseline": 0.8881, "n": 143, "deltas": [-0.2517,-0.0629,-0.007,0.0,0.0,0.0,-0.021,-0.035]},
+    "Visual_Similarity": {"baseline": 0.763, "n": 135, "deltas": [-0.2889,-0.2815,-0.0667,0.0,0.0593,0.0667,0.0741,0.0963]}
+  },
+  "derived": {"tasks_hurt_at_alpha_cd_minus_1": 6, "minus_1_harm_range_pp": [20.51,38.33], "monotone_negative_side_tasks": 5, "monotonicity_exception": "Counting changes by one item at alpha_cd=-0.3"},
+  "scope": "Preliminary-protocol directional sensitivity, not an independent confirmatory or causal test."
+}

@@ -1,4 +1,12 @@
 {
+  "status": "not_retained_scoring_mismatch",
+  "evidence_use": "audit_history_only_not_camera_ready_evidence",
+  "scoring_mismatch": {
+    "historical_protocol": "Argmax over the first token ID of each space-prefixed answer label.",
+    "canonical_protocol": "Argmax over bare continuation-label token IDs at the final prompt position.",
+    "consequence": "The A/B/C/D anchor does not reproduce the canonical Phase-2 scorer, so neither the relabeling costs nor within-run prediction-stability counts are retained as scientific evidence.",
+    "rerun_required_for_reinstatement": true
+  },
   "aggregate": {
     "abcd": {
       "asymmetry_ratio": 11.0,
@@ -40,6 +48,36 @@
     "text_layer": 12,
     "vis_layer": 16
   },
+  "label_mappings": {
+    "abcd": {"A": "A", "B": "B", "C": "C", "D": "D"},
+    "npr": {"A": "M", "B": "N", "C": "P", "D": "R"},
+    "symbols": {"A": "◆", "B": "◇", "C": "▲", "D": "▼"}
+  },
+  "prediction_stability": {
+    "definition": "Prediction comparison with the baseline prediction inside the same label-interface run; no ground truth is used.",
+    "abcd": {
+      "n": 771,
+      "visual_unchanged_count": 717,
+      "visual_unchanged_rate": 0.9299610894941635,
+      "text_changed_count": 604,
+      "text_changed_rate": 0.7833981841763943
+    },
+    "npr": {
+      "n": 771,
+      "visual_unchanged_count": 742,
+      "visual_unchanged_rate": 0.9623865110246433,
+      "text_changed_count": 666,
+      "text_changed_rate": 0.8638132295719845
+    },
+    "symbols": {
+      "n": 771,
+      "visual_unchanged_count": 771,
+      "text_changed_count": 759,
+      "interpretation_status": "not_interpreted_due_to_baseline_collapse"
+    }
+  },
+  "historical_aggregate_source_sha256": "d102cf08597a5341cc937ae2b4ef48bed482ba3dc336246f3955221d2da74c9d",
+  "per_example_records_released": false,
   "results": [
     {
       "baseline_acc": 0.5726,

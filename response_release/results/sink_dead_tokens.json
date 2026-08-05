@@ -1,0 +1,17 @@
+{
+  "model": "Qwen2.5-VL-7B-Instruct",
+  "protocol": {"fit_images": 2000, "dead_token_activation_l2_norm_percentile": 5, "sink_token_activation_l2_norm_percentile": 99, "tasks": 6},
+  "historical_source_sha256": "5399bcc33012b2be89e3692c9bef83e728d8a9f62125c3c565193c78a787f60d",
+  "variants": {
+    "baseline": {"mean_visual_cost": 0.0142, "mean_text_cost": 0.2723, "mean_oracle_best_delta": 0.0545, "visual_tokens_kept": 707414, "text_tokens_kept": 32000},
+    "no_dead": {"mean_visual_cost": 0.0034, "mean_text_cost": 0.2723, "mean_oracle_best_delta": 0.0477, "visual_tokens_kept": 672043, "text_tokens_kept": 30400},
+    "no_sink": {"mean_visual_cost": 0.0168, "mean_text_cost": 0.2723, "mean_oracle_best_delta": 0.0505, "visual_tokens_kept": 700339, "text_tokens_kept": 31680},
+    "no_either": {"mean_visual_cost": 0.0231, "mean_text_cost": 0.2723, "mean_oracle_best_delta": 0.0520, "visual_tokens_kept": 664968, "text_tokens_kept": 30080}
+  },
+  "difference_from_baseline": {
+    "no_dead": {"mean_visual_cost": -0.0108, "mean_text_cost": 0.0, "mean_oracle_best_delta": -0.0068},
+    "no_sink": {"mean_visual_cost": 0.0026, "mean_text_cost": 0.0, "mean_oracle_best_delta": -0.0040},
+    "no_either": {"mean_visual_cost": 0.0089, "mean_text_cost": 0.0, "mean_oracle_best_delta": -0.0025}
+  },
+  "scope": "Qwen-only descriptive cached token-activation L2-norm tail-filter sensitivity; oracle best-alpha values remain selected in task."
+}

@@ -6,13 +6,16 @@
       "method_sha256": "423aaeed57b7230b37beee095764afae5be0f6740835eae8a030fd6d75df8935",
       "n": {
         "benchmarks": 8,
+        "historical_mcqa_cells": 70,
+        "historical_mcqa_non_chance_cells": 60,
+        "mme_binary_cells": 10,
         "models": 10,
         "non_chance_cells": 70
       },
-      "note": "Ten supported-span model files live under results/breadth; Qwen2-VL is excluded.",
+      "note": "Split evidence status: the 70 MCQA cells use a historical space-prefixed answer-token logit scorer and are audit history, not canonical-scoring evidence; the 10 MME cells use a separately retained option-letter-free binary scorer. Qwen2-VL is excluded. Historical response-run paired p-values are integrity-only because b/c counts are unavailable.",
       "result": "results/breadth_index.json",
-      "result_sha256": "2406be40073fff12561caad34bbacf646c9e7dbca9071a32e2522fe6e1ddee86",
-      "status": "retained"
+      "result_sha256": "baee6f88dca84b3e96bfe306bc9dd5221a7993ee1bbcf6a7e7a58cc9170addf0",
+      "status": "historical_mcqa_scoring_variant_with_retained_mme_binary_control"
     },
     {
       "claim_id": "blink_all14",
@@ -31,27 +34,43 @@
       "claim_id": "benchmark_portfolio",
       "method": "methods/benchmark_sweep.py.txt",
       "method_sha256": "681b2e7b6ec8c28b3031ef3ca70627de56f1d50d9c47439efabc1ead6476ac45",
+      "additional_methods": [
+        {
+          "path": "methods/vpbench_medblink_sweep.py.txt",
+          "sha256": "91d092b899024a8b011f992113b0f667aefd9d5324185e824129d789ec0d69d7"
+        }
+      ],
       "n": {
         "benchmark_groups": 3,
         "models": 7
       },
-      "note": "Aggregate core, VPBench, and MedBLINK sweeps; no examples redistributed.",
+      "note": "Aggregate core, VPBench, and MedBLINK sweeps; the additional producer link covers VPBench and MedBLINK. No examples redistributed.",
       "result": "results/benchmark_portfolio.json",
       "result_sha256": "0e2726a2716939f4501bbdc2ec533065b2cd7c074a631515e8ec14ac6f88bc84",
       "status": "retained_descriptive"
     },
     {
+      "claim_id": "medgemma_medblink",
+      "method": "methods/medgemma_medblink_protocol.md",
+      "method_sha256": "6b3ef781e07a30ccc0652102dc91fe840d3b72bfc04468e831af406d55975a77",
+      "n": {"models": 2, "tasks_per_model": 8, "alpha_cells_per_model": 64},
+      "note": "Full releasable MedGemma MedBLINK task cells; +26.87 points is a selected, nominal, unadjusted task-level highlight.",
+      "result": "results/medgemma_medblink.json",
+      "result_sha256": "ee7ae3680ce168800fc4dd018c06f2ca65292dd9c2f2826bef7c6cfe437286b3",
+      "status": "retained_descriptive_selected"
+    },
+    {
       "claim_id": "label_stability",
-      "method": "methods/rebuttal_label_asymmetry.py.txt",
-      "method_sha256": "dead9d5f27fe5326e9fdcd934a52c1e4970118a2961f306daef8a33b137cf03f",
+      "method": "methods/label_stability_protocol.md",
+      "method_sha256": "938ec4b9b781e4086a9fce7bb65fd71462e577c7d705d47681c0b60fc4a294f6",
       "n": {
         "conditions": 3,
         "tasks": 6
       },
-      "note": "ABCD, numeric-word, and symbol label conditions.",
+      "note": "Not retained as evidence: the historical space-prefixed answer-token scorer does not match the canonical bare continuation-label scorer, and the A/B/C/D anchor does not reproduce the canonical run. Exact aggregates and stability counts remain checksum-covered audit history only.",
       "result": "results/label_stability.json",
-      "result_sha256": "5f71dd23ff59f4684c6e45fb57a1b6076394a9c7c39ddeb223cfdad5734e0f31",
-      "status": "retained"
+      "result_sha256": "4c4daff62b54145bbd2a2ae419c869206e1ccf875b65a6927918d71df90d3450",
+      "status": "not_retained_scoring_mismatch"
     },
     {
       "claim_id": "stage_and_layer_probe",
@@ -65,6 +84,16 @@
       "result": "results/stage_probe.json",
       "result_sha256": "4c8808669d5dd00c0b7debc40d003f07c75f111e2130054e1ff0e302926137f3",
       "status": "retained"
+    },
+    {
+      "claim_id": "text_tccd_layer_sweep",
+      "method": "methods/text_tccd_layer_sweep_protocol.md",
+      "method_sha256": "ad794b5af9eed7abc99751e81ec385842ae5807d224d10aa48c273166f26e723",
+      "n": {"examples": 771, "layers": 16, "tasks": 6},
+      "note": "L12-fitted K=512 bank injected at 16 layers; outcome-derived group separation is intervention sensitivity, not independent taxonomy validation.",
+      "result": "results/text_tccd_layer_sweep.json",
+      "result_sha256": "c1e889c02197289ced2b39cd1d743d445d19c400a234733d99ff32b499d6f1b4",
+      "status": "retained_exploratory"
     },
     {
       "claim_id": "blank_image_control",
@@ -94,7 +123,7 @@
     {
       "claim_id": "mmbench_circular_canonical",
       "method": "scripts/recompute_claims.py",
-      "method_sha256": "015688846c3063c11b1ea313e9d2e960e9dcaa04f19bfc5005b8b52f50d6bfd2",
+      "method_sha256": "c25b4134f279ee77a169236d44cb21a60982d0eb4bbf717ee3819cdba0661b29",
       "n": 938,
       "note": "Restricted to bases with four canonical rotations.",
       "result": "results/mmbench_circular_canonical.json",
@@ -104,11 +133,11 @@
     {
       "claim_id": "mmbench_portfolio_canonical",
       "method": "scripts/recompute_claims.py",
-      "method_sha256": "015688846c3063c11b1ea313e9d2e960e9dcaa04f19bfc5005b8b52f50d6bfd2",
+      "method_sha256": "c25b4134f279ee77a169236d44cb21a60982d0eb4bbf717ee3819cdba0661b29",
       "n": 1176,
-      "note": "Canonical one-row-per-base aggregation.",
+      "note": "Canonical one-row-per-base aggregation with sufficient 2x2 flip cross-tabs for all three reported correlations.",
       "result": "results/mmbench_portfolio_canonical.json",
-      "result_sha256": "dac55e2999f6d781196f19783dc38cc071ba9da260916dfc4b50a5e68b8a4735",
+      "result_sha256": "099a25237f8dfc76a7b55e111796d7c6baa64da3ae67951ee3bafd2b83c47fc6",
       "status": "retained_corrected"
     },
     {
@@ -123,6 +152,16 @@
       "result": "results/calibration.json",
       "result_sha256": "1726a320f254a7bfaa1e5247fc9275edbc87adf122de4310a6ba9b661bc26c1a",
       "status": "retained_exploratory"
+    },
+    {
+      "claim_id": "preliminary_per_task_calibration",
+      "method": "methods/preliminary_calibration_protocol.md",
+      "method_sha256": "e544b20888c8e0b8ebe9f5c5672af55a51b88a57ba784693b8cb6284b470f7cd",
+      "n": {"examples": 771, "tasks": 6},
+      "note": "Separate preliminary K=512 fixed-setting ten-bin ECE diagnostic; unweighted mean ECE rises by 0.0173.",
+      "result": "results/preliminary_calibration.json",
+      "result_sha256": "6afe95ecefaed832561f3ee23f8c5ad0d39f774dd695f3b92d39f9bb8715309e",
+      "status": "retained_preliminary_negative_calibration"
     },
     {
       "claim_id": "cd_baselines_cv",
@@ -155,14 +194,14 @@
     {
       "claim_id": "vote_resampling",
       "method": "methods/rebuttal_vote_kclean.py.txt",
-      "method_sha256": "3dc6a8a17b00787063a169e3d832658e22d45efb2411c616bc4b4ae003d44ac9",
+      "method_sha256": "40f8fba13f889b84f4f9eeb72ae82f157edd2291ec57d1f314cfb50b70629bc6",
       "n": {
         "examples": 771,
         "tasks": 6
       },
       "note": "Additional aggregates in blink_portfolio.json, opera.json, and VIS-CCD.",
       "result": "results/vote_resampling.json",
-      "result_sha256": "8b8d3f343f22fd177c318cce1746c1f617fceb5fae3c9886eda1f5db1b406f9e",
+      "result_sha256": "dcd0322f75440befd0e67dfe23778e35d17e49109bc61bedaf2dfd70cb582c7b",
       "status": "retained_descriptive"
     },
     {
@@ -181,50 +220,60 @@
     {
       "claim_id": "mixed_effects_and_lomo",
       "method": "methods/statistics_protocol.md",
-      "method_sha256": "452111343b8f3130d5d77eeaf2af4fb15ccdd4bd1d508781186c42be5c84942d",
+      "method_sha256": "2ae5bbc515d658d1abffb37c1314914eff899abe3a58f7b11fb45b8eb8285a0e",
       "n": {
         "model_task_cells": 42,
         "models": 7
       },
-      "note": "Canonical CORE-7 mixed-effects values plus corrected two-sided and directional LOMO tests.",
+      "note": "Crossed CORE-7 REML, model-level Hake summary, and corrected two-sided/directional LOMO tests; the prior non-crossed fit is provenance-only.",
       "result": "results/statistics.json",
-      "result_sha256": "3119c082cdbea60e3dee5d3d7dcb8abd09c75564d2bfd87f53ceeb46aff491ad",
+      "result_sha256": "d43b8140ca6a3d33ab883c0ceb13b0b6b27c22183bc70de0974f709d9a37cb8e",
       "status": "retained_corrected"
+    },
+    {
+      "claim_id": "specificity_equal_norm_control",
+      "method": "methods/specificity_controls_protocol.md",
+      "method_sha256": "6d29885b5ad830976971dba179c348c5837986bde1618ba782c36be233430284",
+      "n": {"examples": 771, "tasks": 6, "seeds": 1},
+      "note": "Primary one-seed equal-per-token-norm real versus isotropic-random direction comparison. Historical three-control values are integrity-only and not dose curves.",
+      "result": "results/specificity_controls.json",
+      "result_sha256": "a26bc9849f5d67d776688b39b89e2d8f5df736034e42127c71d023f0d5bf5fad",
+      "status": "retained_scoped"
     },
     {
       "claim_id": "external_judges",
       "method": "methods/external_judge_protocol.md",
-      "method_sha256": "67eeab5ecf3387d8032aab702d3b655d6d92e5604ca8217fdd53687dbe41e9be",
+      "method_sha256": "2b477769478130388f6fa4271ac95b4df5d3aa155913f9a39b61d99902725fd4",
       "n": 79,
-      "note": "Aggregate judge agreement only; prompts and item-linked outputs are omitted.",
+      "note": "Agreement fractions and raw agreement reconstruct from counts; kappa is integrity-only because the paired 4x4 table is unavailable. Prompts and item-linked outputs are omitted.",
       "result": "results/external_judges.json",
-      "result_sha256": "f69d62af310a5b0fc9f2fae46fd29642c8ab55c263df4f8f0e96de09fc871f21",
-      "status": "retained_descriptive"
+      "result_sha256": "e937de32a9497bd25321b50906c80eb15332dacda3441a8940b8d254c0d308a1",
+      "status": "retained_descriptive_with_integrity_only_kappa"
     },
     {
       "claim_id": "generative_checks",
       "method": "scripts/recompute_claims.py",
-      "method_sha256": "015688846c3063c11b1ea313e9d2e960e9dcaa04f19bfc5005b8b52f50d6bfd2",
+      "method_sha256": "c25b4134f279ee77a169236d44cb21a60982d0eb4bbf717ee3819cdba0661b29",
       "n": {
         "captioning": 2000,
         "docvqa": 300,
         "okvqa": 2000
       },
-      "note": "Other aggregates in captioning.json and docvqa.json.",
+      "note": "Caption and soft-accuracy paired t-tests reconstruct from sufficient statistics; OK-VQA exact match remains a separate exact McNemar test.",
       "result": "results/generative_index.json",
-      "result_sha256": "fc87c1f84c9481177e046d57b35946ef63ae5f89930d5c7e48332f0a206f2454",
+      "result_sha256": "bce3741141b06f191e33889d1d3eae4f3ff281af4275f793c0314588cce372ee",
       "status": "retained_negative"
     },
     {
       "claim_id": "segment_dose",
       "method": "methods/segment_dose_protocol.md",
-      "method_sha256": "21aa8145c8a4d02a7a10906669fe2db7707a946b476c043cc9513ac9ff5cafb0",
+      "method_sha256": "8befdfc137565dcbc73f12a1f0a78efbb82eb5fcdda2ad3f2b5e09cf048feca9",
       "n": {
         "tasks": 6
       },
-      "note": "Legacy semantic-looking names are replaced by positional-span descriptions.",
+      "note": "Legacy semantic-looking names are replaced by positional descriptions; a checksummed three-source union asserts all four spans at four doses.",
       "result": "results/segment_dose.json",
-      "result_sha256": "eec75217c6923c4dc51b4a2204f176a22d9dd0d1d2740f765ad8ad69440629d2",
+      "result_sha256": "10013c0a787035b15eb53065b8b07782b78cb66d3709631d5bdf4734846694de",
       "status": "retained_relabelled"
     },
     {
@@ -240,9 +289,77 @@
       "result": "results/variance_index.json",
       "result_sha256": "4c220ef6b9d82358fb746a0747d9afaf4962c486e0d1324ea38350618f27231d",
       "status": "retained_descriptive_two_harnesses"
+    },
+    {
+      "claim_id": "sink_dead_tokens",
+      "method": "methods/sink_dead_tokens_protocol.md",
+      "method_sha256": "96bae8fa564780558e09ddc76aadc35633d2aaa1a763ebd1bd9dc7aa6ccc6986",
+      "n": {"tasks": 6, "variants": 4},
+      "note": "Qwen-only cached token-activation L2-norm tail-filter sensitivity; recovery means select alpha within task.",
+      "result": "results/sink_dead_tokens.json",
+      "result_sha256": "32496ea251830eeadf1c4bb2722d174fc30bf0cae0a15f9807cfdd37c254c31c",
+      "status": "retained_descriptive_selected"
+    },
+    {
+      "claim_id": "negative_alpha_cd",
+      "method": "methods/negative_alpha_cd_protocol.md",
+      "method_sha256": "8abb8164cbe9c965846482aed70b8224c952bf5e617a9ec08a310faf3dc4b2fc",
+      "n": {"examples": 771, "tasks": 6, "alpha_cd_values": 8},
+      "note": "Preliminary K=512 directional sweep; all six tasks are hurt 20.51--38.33 points at alpha_cd=-1, with Counting the one-item negative-side exception.",
+      "result": "results/negative_alpha_cd.json",
+      "result_sha256": "7bc6dc21b94ab80b0e9d679e4577aa57feb0a13921061afb22f97b7deac28c8b",
+      "status": "retained_preliminary_directional"
+    },
+    {
+      "claim_id": "nk_scaling",
+      "method": "methods/nk_scaling_protocol.md",
+      "method_sha256": "6a8e9a076b4967893a89670a3903aa0e13bbf0d0e695de33cd5ac44b512dec86",
+      "n": {"cells": 30, "fit_image_counts": 6, "centroid_counts": 5},
+      "note": "Complete N-by-K selected best-alpha surface; mean 5.219 points and population SD 0.373 points. Distinct from refit-variance harnesses.",
+      "result": "results/nk_scaling.json",
+      "result_sha256": "5a10267c91b52fc224953bf2fd9b4cf224df386a9b6c372058f2f404bdc7b7fd",
+      "status": "retained_descriptive_selected"
+    },
+    {
+      "claim_id": "centroid_source_transfer",
+      "method": "methods/centroid_source_transfer_protocol.md",
+      "method_sha256": "0839c9683ffa126b91b63c29008ce0c11dadcf3d04089447802283ed386b074e",
+      "n": {"tasks": 6, "source_columns": 4},
+      "note": "Provenance-aware composite; the historical all_blink label is corrected to all six deep-dive tasks. Fit, pipeline, alpha_cd, and alpha-selection differences preclude causal comparison.",
+      "result": "results/centroid_source_transfer.json",
+      "result_sha256": "15d2d1d7e6f9c62bb816ddcccc2a488f0a39459945314da100db51e822c04967",
+      "status": "retained_descriptive_composite"
+    },
+    {
+      "claim_id": "figure1_attention_exemplar",
+      "method": "methods/figure1_attention_protocol.md",
+      "method_sha256": "7508df342b4e32e3348aa0ddfd666aea0ab12e3cba0527b5b6f530a79c50e226",
+      "n": {"selected_examples": 1, "layers": 3},
+      "note": "Pinned selected-exemplar rerun reconstructing actual post-RoPE attention at inherited layers. L22 visual-span mass is 3.63% in the original and 11.09% in the text-replaced reference; both predict A, while the separate TCCD logit combination predicts B. Selected descriptive evidence, not aggregate or mechanism evidence. By final author design choice, the active artwork restores the response-era overlays only as qualitative QK proxies; the corrected audit remains the numerical attention evidence.",
+      "result": "results/figure1_attention_exemplar.json",
+      "result_sha256": "02c82d36c3b4049c039b662202616c2e7ad88b72eb9dc885e154912569cbbf92",
+      "status": "retained_qualitative_post_rope_attention_exemplar"
+    },
+    {
+      "claim_id": "shipped_bank_full_split_verification",
+      "method": "methods/shipped_bank_verification_protocol.md",
+      "method_sha256": "b02887ded42387cebd083c8e7a5a125927b35df42fefafa91901d9318993fe1b",
+      "n": {"examples": 771, "tasks": 6},
+      "note": "Structured full-split public-code/shipped-bank run record; implementation verification, not an independent refit or new experiment. Exact deviations are provenance-only because task rows are rounded.",
+      "result": "results/shipped_bank_full_split_verification.json",
+      "result_sha256": "2af48f422b63aeb1608802c6855d1742e4506e8344ef9e9e1dfbc2883db1f8f4",
+      "status": "implementation_verification"
     }
   ],
   "auxiliary_files": [
+    {
+      "path": "methods/figure1_pre_rope_qk_proxy_historical.md",
+      "sha256": "2949ae9e6328c6234ccc6e04b5d0fe9efd42cdd670f0f3ab124d1fff732cabde"
+    },
+    {
+      "path": "results/figure1_pre_rope_qk_proxy_historical.json",
+      "sha256": "0b9bff7679061ada5ef19409e7ba806750bd1f82251f9b7ea3fe94f002363657"
+    },
     {
       "path": "methods/chair_captioning_qwen7b.py.txt",
       "sha256": "b8257160c44d17c95d89cb94d2b663afb31d7a1fb08c21c2d55a341a92c7b96a"
@@ -280,6 +397,18 @@
       "sha256": "91d092b899024a8b011f992113b0f667aefd9d5324185e824129d789ec0d69d7"
     },
     {
+      "path": "methods/rebuttal_label_asymmetry.py.txt",
+      "sha256": "dead9d5f27fe5326e9fdcd934a52c1e4970118a2961f306daef8a33b137cf03f"
+    },
+    {
+      "path": "methods/generative_paired_tests.md",
+      "sha256": "967fd901b21ab9e0f21287b51205f8dc83b3f59a2d8bee49212e501e668a9ce7"
+    },
+    {
+      "path": "scripts/recompute_statistics_specificity.py",
+      "sha256": "f709d50bf84c99742d4aad524a7b115714a94d0f8af9f093893960e54f9e88db"
+    },
+    {
       "path": "results/blink_portfolio.json",
       "sha256": "13e8641c68f9daa73986a0e7c830fb22919e93cc5653f9f1dc0c31b45c1dbaf5"
     },
@@ -296,7 +425,26 @@
       "sha256": "a726bd98dce39fa06d25e1d18fbe3359684d78f25e1feb6e9ba1b33fd53d4de4"
     }
   ],
-  "format_version": 1,
-  "content_scope": "aggregate experimental records and sanitized protocol material",
-  "release_scope": "aggregate supplementary analyses reported in the paper"
+  "status_taxonomy": {
+    "historical_mcqa_scoring_variant_with_retained_mme_binary_control": "Mixed-status breadth record: historical noncanonical MCQA scoring plus retained option-letter-free MME evidence.",
+    "implementation_verification": "Public-code/artifact verification, not a new scientific experiment.",
+    "not_retained_scoring_mismatch": "Preserved solely as audit history after a protocol-scoring mismatch; not scientific evidence.",
+    "retained": "Retained under its stated protocol and scope.",
+    "retained_corrected": "Retained after a documented correction.",
+    "retained_descriptive": "Retained for descriptive, noncausal interpretation.",
+    "retained_descriptive_composite": "Retained descriptive composite with explicit cross-source confounds.",
+    "retained_descriptive_selected": "Retained descriptive result with outcome/setting selection explicitly disclosed.",
+    "retained_descriptive_two_harnesses": "Retained descriptive sensitivities verified separately across nonpooled harnesses.",
+    "retained_descriptive_with_integrity_only_kappa": "Retained descriptive counts with kappa preserved as integrity-only provenance.",
+    "retained_exploratory": "Retained exploratory analysis requiring independent validation.",
+    "retained_negative": "Retained negative or scope-limiting result.",
+    "retained_preliminary_directional": "Retained preliminary directional sensitivity, not a final-protocol estimate.",
+    "retained_preliminary_negative_calibration": "Retained preliminary negative calibration diagnostic.",
+    "retained_qualitative_post_rope_attention_exemplar": "Retained selected post-RoPE attention audit with separate reference-pass and TCCD semantics; numerical evidence is distinct from the restored qualitative pre-RoPE overlays and is not aggregate or mechanism evidence.",
+    "retained_relabelled": "Retained after replacing an invalid semantic label with a descriptive positional label.",
+    "retained_scoped": "Retained with a narrow interpretation boundary."
+  },
+  "format_version": 3,
+  "content_scope": "aggregate or derived experimental records, scoped implementation-verification metadata, and sanitized protocol material",
+  "release_scope": "camera-ready analyses, scoped implementation verification, explicit integrity-only historical fields, and not-retained audit records"
 }
