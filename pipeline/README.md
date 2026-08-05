@@ -21,7 +21,9 @@ The defaults fix the quantities that affect the reported results:
 `--sanity` uses 400 COCO images and eight BLINK examples per task. The alpha,
 seed, and segment flags likewise create an alternate
 configuration; every selected value is stored in `config.json` and in result
-provenance.
+provenance. A custom `--alphas` list must include the fixed protocol value 0.4
+unless `--segments_only` is used; malformed, duplicate, non-finite, or
+contradictory options are rejected before any dataset or model is loaded.
 
 ## Running
 

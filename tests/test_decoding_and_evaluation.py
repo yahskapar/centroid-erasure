@@ -44,13 +44,25 @@ def test_contrastive_logits_and_alpha_selection_protocols():
     torch.testing.assert_close(
         contrastive_logits(clean, erased, -1.0), erased
     )
+    torch.testing.assert_close(
+        contrastive_logits(clean, erased, np.float32(1.0)),
+        torch.tensor([3.0, 2.0]),
+    )
+    for invalid in (True, np.bool_(False), "1.0", torch.tensor(1.0)):
+        with pytest.raises(TypeError, match="alpha_cd must be"):
+            contrastive_logits(clean, erased, invalid)
+    for invalid in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="alpha_cd must be"):
+            contrastive_logits(clean, erased, invalid)
 
     scores = {
         "held_out": {0.0: 0.10, 0.4: 0.30, 0.8: 0.20},
         "other_1": {0.0: 0.00, 0.4: 0.10, 0.8: 0.50},
         "other_2": {0.0: 0.00, 0.4: 0.20, 0.8: 0.40},
     }
-    assert select_alpha("fixed", scores, fixed_alpha=0.25) == 0.25
+    assert select_alpha("fixed", scores, fixed_alpha=0.4) == 0.4
+    with pytest.raises(ValueError, match="fixed alpha 0.25 was not evaluated"):
+        select_alpha("fixed", scores, fixed_alpha=0.25)
     assert select_alpha("best", scores, task="held_out") == 0.4
     assert select_alpha("cv", scores, task="held_out") == 0.8
 
@@ -224,6 +236,23 @@ def test_tccd_runs_clean_then_erased_pass_and_returns_each_distribution(
         ("clean", model, inputs),
         ("erased", model, inputs, hook),
     ]
+
+
+def test_contrastive_logits_rejects_broadcasting_and_dtype_mismatches():
+    clean = torch.ones(3, dtype=torch.float32)
+    with pytest.raises(ValueError, match="exactly the same shape"):
+        contrastive_logits(clean, torch.ones((1, 3), dtype=torch.float32))
+    with pytest.raises(TypeError, match="same dtype"):
+        contrastive_logits(clean, torch.ones(3, dtype=torch.float64))
+    with pytest.raises(TypeError, match="floating-point"):
+        contrastive_logits(torch.ones(3, dtype=torch.int64), torch.ones(3, dtype=torch.int64))
+
+
+def test_contrastive_logits_rejects_device_mismatches_before_arithmetic():
+    clean = torch.ones(3, dtype=torch.float32)
+    erased = torch.ones(3, dtype=torch.float32, device="meta")
+    with pytest.raises(ValueError, match="same device"):
+        contrastive_logits(clean, erased)
 
 
 def test_alpha_selection_handles_single_task_and_empty_candidate_intersection():

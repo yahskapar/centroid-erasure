@@ -295,6 +295,22 @@ def test_hook_registration_rejects_width_and_layer_mismatches():
         )
 
 
+def test_hook_runtime_width_mismatch_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        "centroid_erasure.hooks.find_visual_token_range",
+        lambda *args: (1, 3),
+    )
+    hook = CentroidReplacementHook(
+        None,
+        CentroidBank(torch.zeros((1, 2))),
+        "qwen",
+        None,
+        modality="visual",
+    )
+    with pytest.raises(ValueError, match="runtime hidden width 3"):
+        hook(None, None, torch.ones((1, 4, 3)))
+
+
 def test_clean_and_erased_logits_use_final_position_and_hook_context():
     class Model:
         def __call__(self, **inputs):

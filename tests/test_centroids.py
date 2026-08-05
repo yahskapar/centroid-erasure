@@ -126,6 +126,19 @@ def test_replacement_interpolates_between_nearest_centroid_and_identity():
     torch.testing.assert_close(
         bank.replace(activations, alpha_interp=1.0), activations
     )
+    torch.testing.assert_close(
+        bank.replace(activations, alpha_interp=np.float32(0.5)),
+        torch.tensor([[1.0, 0.0], [9.5, 0.0]]),
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_replacement_preserves_input_dtype(dtype):
+    bank = CentroidBank(torch.tensor([[0.0, 0.0], [2.0, 0.0]], dtype=torch.float32))
+    activations = torch.tensor([[1.5, 0.0]], dtype=dtype)
+    result = bank.replace(activations, alpha_interp=0.5)
+    assert result.dtype == dtype
+    torch.testing.assert_close(result, torch.tensor([[1.75, 0.0]], dtype=dtype))
 
 
 @pytest.mark.parametrize(

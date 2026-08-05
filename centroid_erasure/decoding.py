@@ -12,6 +12,10 @@ pushes toward it, which amplifies text competition and is the dose-response
 control reported in the paper (accuracy falls on every task).
 """
 
+import math
+import numbers
+
+import numpy as np
 import torch
 
 DEFAULT_ALPHA_CD = 1.0
@@ -29,6 +33,34 @@ def contrastive_logits(logits_clean, logits_erased, alpha_cd=DEFAULT_ALPHA_CD):
     Returns:
         (V,) tensor of contrastive logits.
     """
+    if not isinstance(logits_clean, torch.Tensor) or not isinstance(
+        logits_erased, torch.Tensor
+    ):
+        raise TypeError("clean and erased logits must be torch tensors")
+    if logits_clean.shape != logits_erased.shape:
+        raise ValueError(
+            "clean and erased logits must have exactly the same shape; "
+            f"got {tuple(logits_clean.shape)} and {tuple(logits_erased.shape)}"
+        )
+    if logits_clean.device != logits_erased.device:
+        raise ValueError(
+            "clean and erased logits must be on the same device; "
+            f"got {logits_clean.device} and {logits_erased.device}"
+        )
+    if logits_clean.dtype != logits_erased.dtype:
+        raise TypeError(
+            "clean and erased logits must have the same dtype; "
+            f"got {logits_clean.dtype} and {logits_erased.dtype}"
+        )
+    if not logits_clean.is_floating_point():
+        raise TypeError("clean and erased logits must use a floating-point dtype")
+    if not isinstance(alpha_cd, numbers.Real) or isinstance(
+        alpha_cd, (bool, np.bool_)
+    ):
+        raise TypeError("alpha_cd must be a finite real number")
+    alpha_cd = float(alpha_cd)
+    if not math.isfinite(alpha_cd):
+        raise ValueError("alpha_cd must be a finite real number")
     return logits_clean + alpha_cd * (logits_clean - logits_erased)
 
 
@@ -83,6 +115,21 @@ def select_alpha(
         float alpha_interp.
     """
     if protocol == "fixed":
+        selected_tasks = [task] if task is not None else list(per_task_scores)
+        if not selected_tasks:
+            raise ValueError("fixed protocol needs at least one evaluated task")
+        unknown = [name for name in selected_tasks if name not in per_task_scores]
+        if unknown:
+            raise ValueError(f"fixed protocol received unknown task(s): {unknown}")
+        missing = [
+            name
+            for name in selected_tasks
+            if fixed_alpha not in per_task_scores[name]
+        ]
+        if missing:
+            raise ValueError(
+                f"fixed alpha {fixed_alpha} was not evaluated for task(s) {missing}"
+            )
         return fixed_alpha
 
     if protocol not in PROTOCOLS:

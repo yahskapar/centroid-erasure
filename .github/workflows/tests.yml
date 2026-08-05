@@ -51,6 +51,45 @@ jobs:
           python demo/run_demo.py --help
           python pipeline/paper_sweep.py --help
 
+      - name: Verify isolated wheel import and contents
+        run: |
+          python -m pip install --no-deps \
+            --target /tmp/centroid-erasure-wheel-install \
+            /tmp/centroid-erasure-wheel/*.whl
+          cd /tmp
+          PYTHONPATH=/tmp/centroid-erasure-wheel-install python - <<'PY'
+          from pathlib import Path
+          import centroid_erasure
+
+          installed = Path("/tmp/centroid-erasure-wheel-install").resolve()
+          imported = Path(centroid_erasure.__file__).resolve()
+          assert imported.is_relative_to(installed), (imported, installed)
+          assert centroid_erasure.__version__ == "1.0.0"
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          wheels = list(Path("/tmp/centroid-erasure-wheel").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = archive.namelist()
+          forbidden = (
+              "main.py",
+              "demo/",
+              "pipeline/",
+              "centroids/",
+              "tests/",
+              "response_release/",
+          )
+          assert any(name.startswith("centroid_erasure/") for name in names)
+          assert any(".dist-info/" in name for name in names)
+          assert not [
+              name for name in names
+              if name == "main.py" or name.startswith(forbidden[1:])
+          ], names
+          PY
+
       - name: Check source syntax
         run: |
           python -m compileall -q \

@@ -14,6 +14,8 @@ the paper; note that it is the opposite of "erasure strength".
 
 import hashlib
 import json
+import math
+import numbers
 import os
 import tempfile
 from pathlib import Path
@@ -85,10 +87,31 @@ class CentroidBank:
         Returns:
             (N, D) tensor, same device and dtype as the computation input.
         """
+        if not isinstance(x, torch.Tensor):
+            raise TypeError("x must be a torch tensor")
+        if x.ndim != 2 or x.shape[1] != self.dim:
+            raise ValueError(
+                f"x must have shape (N, {self.dim}); got {tuple(x.shape)}"
+            )
+        if not x.is_floating_point():
+            raise TypeError("x must use a floating-point dtype")
+        if not torch.isfinite(x).all():
+            raise ValueError("x must contain only finite values")
+        if not isinstance(alpha_interp, numbers.Real) or isinstance(
+            alpha_interp, (bool, np.bool_)
+        ):
+            raise TypeError("alpha_interp must be a finite real number")
+        alpha_interp = float(alpha_interp)
+        if not math.isfinite(alpha_interp):
+            raise ValueError("alpha_interp must be a finite real number")
+
         self.to_device(x.device)
-        dists = torch.cdist(x.unsqueeze(0), self.mu.unsqueeze(0))[0]
+        centers = self.mu
+        if centers.dtype != x.dtype:
+            centers = centers.to(dtype=x.dtype)
+        dists = torch.cdist(x.unsqueeze(0), centers.unsqueeze(0))[0]
         k_idx = dists.argmin(dim=1)
-        mu_k = self.mu[k_idx]
+        mu_k = centers[k_idx]
         return mu_k + alpha_interp * (x - mu_k)
 
     # ── persistence ──

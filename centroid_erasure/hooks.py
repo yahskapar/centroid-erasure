@@ -156,7 +156,10 @@ class CentroidReplacementHook:
                 continue
             tokens = hidden[0, start:end, :].float()
             if tokens.shape[1] != self.bank.dim:
-                continue
+                raise ValueError(
+                    f"runtime hidden width {tokens.shape[1]} does not match "
+                    f"centroid width {self.bank.dim}"
+                )
             hidden[0, start:end, :] = self.bank.replace(
                 tokens, self.alpha_interp
             ).to(dtype)

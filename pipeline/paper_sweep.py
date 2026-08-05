@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""
-cross_model_sweep_v2.py — Consistent cross-model sweep for arXiv
-================================================================
+"""Maintained seven-model Phase-2 paper sweep.
 
-Phase 2 of the arXiv preparation. Re-runs all 7 models with a consistent
-protocol determined by the N×K scaling experiment:
+Runs the released, consistent protocol used for the primary camera-ready
+tables and figures:
 
   - N=2000 COCO images (flat grid shows no benefit from more)
   - K=256 centroids (flat grid shows K doesn't matter much)
-  - α_cd configurable (default 1.0, pending validation from N×K script)
+  - α_cd configurable (camera-ready default 1.0)
   - α_interp sweep: {0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8}
   - Segment ablation at α=0.4
   - Both visual and text centroid sufficiency
 
-This is a thin wrapper around cross_model_sweep.py's core logic, with:
-  1. α_cd configurable via --alpha_cd (default 1.0)
-  2. Only loads 6 BLINK tasks (not POPE/ScienceQA/MMVP)
-  3. Reduced empty_cache frequency
-  4. Resume support for an exactly matching saved configuration
-  5. Runs all 7 standard models by default
+The maintained pipeline exposes configurable α_cd, evaluates the six BLINK
+deep-dive tasks, runs all seven primary checkpoints by default, and resumes
+only from a complete result bound to the exact saved configuration and fitted
+centroid artifact.
 
 Produces Tables 1, 2, and 4 data — all on the same protocol.
 
@@ -36,6 +32,7 @@ import gc
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import sys
 import tempfile
@@ -173,7 +170,7 @@ def _save_centroids_atomic(path, text_mfa, vis_mfa, metadata):
     visual_bank = CentroidBank(vis_mfa.mu, meta=bank_metadata("visual"))
     CentroidBank.save_pair(path, text_bank, visual_bank)
     return {
-        "path": str(path.resolve()),
+        "relative_path": path.name,
         "sha256": _sha256_file(path),
     }
 
@@ -201,18 +198,250 @@ def _write_json_atomic(path, payload):
             tmp_path.unlink()
 
 
-def _task_rows_complete(block, expected_counts):
+def _is_finite_number(value):
+    return (
+        isinstance(value, (int, float, np.integer, np.floating))
+        and not isinstance(value, (bool, np.bool_))
+        and bool(np.isfinite(value))
+    )
+
+
+def _has_numeric_fields(row, fields):
+    return isinstance(row, dict) and all(
+        _is_finite_number(row.get(field)) for field in fields
+    )
+
+
+def _valid_ci(value, estimate):
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and all(_is_finite_number(bound) for bound in value)
+        and 0 <= value[0] <= estimate <= value[1] <= 1
+    )
+
+
+def _approximately_equal(left, right, tolerance=2e-4):
+    return _is_finite_number(left) and abs(float(left) - float(right)) <= tolerance
+
+
+def _task_rows_complete(block, expected_counts, required_fields=()):
     if not isinstance(block, dict) or set(block) != set(expected_counts):
         return False
     return all(
-        isinstance(block[task], dict) and block[task].get("n") == count
+        isinstance(block[task], dict)
+        and block[task].get("n") == count
+        and _has_numeric_fields(block[task], required_fields)
         for task, count in expected_counts.items()
     )
 
 
-def _result_complete(results, expected_counts, config):
-    """Whether every requested task/count/alpha/segment result is present."""
+def _all_finite_numbers(value):
+    """Whether every floating-point value in a nested result is finite."""
+    if isinstance(value, (float, np.floating)):
+        return bool(np.isfinite(value))
+    if isinstance(value, dict):
+        return all(_all_finite_numbers(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return all(_all_finite_numbers(item) for item in value)
+    return True
+
+
+def _artifact_metadata_complete(path, config, expected_model):
+    """Validate embedded bank metadata without enabling pickle loading."""
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            required = {"text_centroids", "vis_centroids", "metadata_json"}
+            if not required.issubset(data.files):
+                return False
+            arrays = {
+                "text": data["text_centroids"],
+                "visual": data["vis_centroids"],
+            }
+            metadata = json.loads(str(data["metadata_json"].item()))
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(metadata, dict) or metadata.get("format_version") != 1:
+        return False
+
+    expected_model_meta = {
+        "model": expected_model,
+        "model_id": config["model_ids"][expected_model],
+        "model_revision": config["model_revisions"][expected_model],
+        "code_revision": config["model_code_revisions"][expected_model],
+    }
+    for modality, centers in arrays.items():
+        bank = metadata.get(modality)
+        if not isinstance(bank, dict):
+            return False
+        expected = {
+            **expected_model_meta,
+            "modality": modality,
+            "layer": config["layers"][modality],
+            "k": config["k"],
+            "seed": config["seeds"]["kmeans"],
+            "coco_source": config["centroid_data"]["source"],
+            "coco_split": config["centroid_data"]["split"],
+            "coco_revision": config["centroid_data"]["revision"],
+            "data_seed": config["seeds"]["data"],
+        }
+        if any(bank.get(field) != value for field, value in expected.items()):
+            return False
+        if centers.ndim != 2 or centers.shape[0] != config["k"]:
+            return False
+    return True
+
+
+def _provenance_complete(provenance, expected_counts, config, run_dir, expected_model):
+    """Bind a resumable result to its exact model, data, fit, and bank."""
+    if not isinstance(provenance, dict) or provenance.get("config") != config:
+        return False
+    if not isinstance(run_dir, (str, os.PathLike)) or not isinstance(expected_model, str):
+        return False
+    if expected_model not in config.get("models", []):
+        return False
+    required_model_maps = ("model_ids", "model_revisions", "model_code_revisions")
+    if any(
+        not isinstance(config.get(field), dict)
+        or expected_model not in config[field]
+        for field in required_model_maps
+    ):
+        return False
+
+    model = provenance.get("model")
+    expected_model_meta = {
+        "registry_key": expected_model,
+        "model_id": config["model_ids"][expected_model],
+        "model_revision": config["model_revisions"][expected_model],
+        "code_revision": config["model_code_revisions"][expected_model],
+    }
+    if not isinstance(model, dict) or any(
+        field not in model or model[field] != value
+        for field, value in expected_model_meta.items()
+    ):
+        return False
+
+    datasets = provenance.get("datasets")
+    if not isinstance(datasets, dict):
+        return False
+    fit_dataset = datasets.get("centroid_fit")
+    evaluation = datasets.get("evaluation")
+    if not isinstance(fit_dataset, dict) or not isinstance(evaluation, dict):
+        return False
+    for field in ("source", "split", "revision"):
+        if fit_dataset.get(field) != config.get("centroid_data", {}).get(field):
+            return False
+        if evaluation.get(field) != config.get("evaluation_data", {}).get(field):
+            return False
+    if evaluation.get("task_counts") != dict(expected_counts):
+        return False
+    if provenance.get("layers") != config.get("layers"):
+        return False
+
+    fit = provenance.get("centroid_fit")
+    if not isinstance(fit, dict):
+        return False
+    harvest = fit.get("harvest")
+    backends = fit.get("backends")
+    if not isinstance(harvest, dict) or not isinstance(backends, dict):
+        return False
+    expected_harvest = {
+        "source": config["centroid_data"]["source"],
+        "split": config["centroid_data"]["split"],
+        "revision": config["centroid_data"]["revision"],
+        "data_seed": config["seeds"]["data"],
+        "prompt": config["centroid_data"]["prompt"],
+        "requested_images": config["max_images"],
+        "accepted_images": config["max_images"],
+        "successful_forwards": config["max_images"],
+        "text_contributions": config["max_images"],
+        "visual_contributions": config["max_images"],
+    }
+    if any(harvest.get(field) != value for field, value in expected_harvest.items()):
+        return False
+    if any(
+        not isinstance(harvest.get(field), int) or harvest[field] <= 0
+        for field in ("text_tokens", "visual_tokens")
+    ):
+        return False
+    if not isinstance(harvest.get("span_fallbacks"), int):
+        return False
+    if not config.get("allow_visual_span_fallback") and harvest["span_fallbacks"] != 0:
+        return False
+    if set(backends) != {"text", "visual"}:
+        return False
+    for backend in backends.values():
+        if not isinstance(backend, dict):
+            return False
+        if backend.get("k") != config["k"] or backend.get("seed") != config["seeds"]["kmeans"]:
+            return False
+        if not isinstance(backend.get("n_tokens"), int) or backend["n_tokens"] <= 0:
+            return False
+        if not isinstance(backend.get("backend"), str) or not backend["backend"]:
+            return False
+        if not isinstance(backend.get("backend_version"), str) or not backend["backend_version"]:
+            return False
+
+    artifact = provenance.get("centroid_artifact")
+    if not isinstance(artifact, dict):
+        return False
+    relative_path = artifact.get("relative_path")
+    digest = artifact.get("sha256")
+    expected_name = f"{expected_model}_centroids.npz"
+    if relative_path != expected_name or Path(relative_path).name != relative_path:
+        return False
+    if not isinstance(digest, str) or len(digest) != 64:
+        return False
+    if any(ch not in "0123456789abcdef" for ch in digest):
+        return False
+    run_dir = Path(run_dir).resolve()
+    artifact_path = (run_dir / relative_path).resolve()
+    if artifact_path.parent != run_dir or not artifact_path.is_file():
+        return False
+    if _sha256_file(artifact_path) != digest:
+        return False
+    return _artifact_metadata_complete(artifact_path, config, expected_model)
+
+
+def _paired_cell_complete(cell, baseline, count, *, require_ci):
+    fields = ("cd_accuracy", "delta", "mcnemar_b", "mcnemar_c", "mcnemar_p")
+    if not isinstance(cell, dict) or cell.get("n") != count:
+        return False
+    if not _has_numeric_fields(cell, fields):
+        return False
+    if not (0 <= cell["cd_accuracy"] <= 1 and 0 <= cell["mcnemar_p"] <= 1):
+        return False
+    if any(
+        not isinstance(cell[field], int) or isinstance(cell[field], bool) or cell[field] < 0
+        for field in ("mcnemar_b", "mcnemar_c")
+    ):
+        return False
+    if cell["mcnemar_b"] + cell["mcnemar_c"] > count:
+        return False
+    if not _approximately_equal(cell["delta"], cell["cd_accuracy"] - baseline):
+        return False
+    return not require_ci or _valid_ci(cell.get("cd_ci"), cell["cd_accuracy"])
+
+
+def _result_complete(
+    results, expected_counts, config, *, run_dir=None, expected_model=None
+):
+    """Whether a saved result is complete, finite, and provenance-bound."""
     if not isinstance(results, dict):
+        return False
+    if results.get("_status") != "complete" or not _all_finite_numbers(results):
+        return False
+    summary = results.get("_summary")
+    if not isinstance(summary, dict):
+        return False
+
+    if not _provenance_complete(
+        results.get("_provenance"),
+        expected_counts,
+        config,
+        run_dir,
+        expected_model,
+    ):
         return False
 
     use_segment_grid = bool(
@@ -221,55 +450,124 @@ def _result_complete(results, expected_counts, config):
         or config["segment_dose_alphas"]
     )
     if not config["segments_only"]:
-        if not _task_rows_complete(results.get("sufficiency"), expected_counts):
+        if not _task_rows_complete(
+            results.get("sufficiency"),
+            expected_counts,
+            (
+                "baseline",
+                "vis_centroid_accuracy",
+                "vis_centroid_cost",
+                "text_centroid_accuracy",
+                "text_centroid_cost",
+            ),
+        ):
             return False
+        for row in results["sufficiency"].values():
+            if not all(0 <= row[field] <= 1 for field in (
+                "baseline", "vis_centroid_accuracy", "text_centroid_accuracy"
+            )):
+                return False
+            if not _approximately_equal(
+                row["vis_centroid_cost"], row["baseline"] - row["vis_centroid_accuracy"]
+            ) or not _approximately_equal(
+                row["text_centroid_cost"], row["baseline"] - row["text_centroid_accuracy"]
+            ):
+                return False
         alpha_block = results.get("alpha_sweep")
-        if not _task_rows_complete(alpha_block, expected_counts):
+        if not _task_rows_complete(
+            alpha_block, expected_counts, ("baseline", "best_delta")
+        ):
             return False
         expected_alphas = {str(alpha) for alpha in config["sweep_alphas"]}
         for task, count in expected_counts.items():
-            cells = alpha_block[task].get("alphas")
+            row = alpha_block[task]
+            if row["baseline"] != results["sufficiency"][task]["baseline"]:
+                return False
+            if not _valid_ci(row.get("baseline_ci"), row["baseline"]):
+                return False
+            if row.get("best_alpha") not in expected_alphas:
+                return False
+            cells = row.get("alphas")
             if not isinstance(cells, dict) or set(cells) != expected_alphas:
                 return False
-            if any(
-                not isinstance(cell, dict) or cell.get("n") != count
+            if not all(
+                _paired_cell_complete(cell, row["baseline"], count, require_ci=True)
                 for cell in cells.values()
             ):
                 return False
+            max_delta = max(cell["delta"] for cell in cells.values())
+            if row["best_delta"] != max_delta or cells[row["best_alpha"]]["delta"] != max_delta:
+                return False
+
+        sufficiency = results["sufficiency"]
+        vis_costs = [sufficiency[task]["vis_centroid_cost"] for task in expected_counts]
+        text_costs = [sufficiency[task]["text_centroid_cost"] for task in expected_counts]
+        best = [alpha_block[task]["best_delta"] for task in expected_counts]
+        fixed = [alpha_block[task]["alphas"].get("0.4", {}).get("delta", 0)
+                 for task in expected_counts]
+        expected_summary = {
+            "mean_vis_cost": round(float(np.mean(vis_costs)), 4),
+            "mean_text_cost": round(float(np.mean(text_costs)), 4),
+            "asymmetry_ratio": round(
+                float(np.mean(text_costs)) / max(abs(float(np.mean(vis_costs))), 0.001),
+                1,
+            ),
+            "mean_best_delta": round(float(np.mean(best)), 4),
+            "mean_fixed_delta": round(float(np.mean(fixed)), 4),
+            "n_tasks_positive_best": sum(value > 0 for value in best),
+            "n_tasks_positive_fixed": sum(value > 0 for value in fixed),
+        }
+        if any(summary.get(field) != value for field, value in expected_summary.items()):
+            return False
 
     if not config["do_segments"]:
         return True
     if use_segment_grid:
         block = results.get("segment_dose_grid")
-        if not _task_rows_complete(block, expected_counts):
+        if not _task_rows_complete(block, expected_counts, ("baseline",)):
             return False
         segments = config["segment_dose_segments"] or [
             "options", "question", "system"
         ]
         alphas = config["segment_dose_alphas"] or [SEGMENT_ALPHA]
+        if config["segments_only"] and summary != {
+            "segments_only": True,
+            "segments": segments,
+            "segment_alphas": alphas,
+        }:
+            return False
         expected_cells = {
             f"{segment}@{alpha}" for segment in segments for alpha in alphas
         }
         for task, count in expected_counts.items():
-            cells = block[task].get("cells")
+            row = block[task]
+            cells = row.get("cells")
             if not isinstance(cells, dict) or set(cells) != expected_cells:
                 return False
-            if any(
-                not isinstance(cell, dict) or cell.get("n") != count
+            if not all(
+                _paired_cell_complete(cell, row["baseline"], count, require_ci=False)
                 for cell in cells.values()
             ):
                 return False
         return True
 
     block = results.get("segment_ablation")
-    if not _task_rows_complete(block, expected_counts):
+    if not _task_rows_complete(block, expected_counts, ("baseline",)):
         return False
     expected_segments = {"all", "options", "question", "system"}
-    return all(
-        isinstance(block[task].get("segments"), dict)
-        and set(block[task]["segments"]) == expected_segments
-        for task in expected_counts
-    )
+    for task in expected_counts:
+        row = block[task]
+        cells = row.get("segments")
+        if not isinstance(cells, dict) or set(cells) != expected_segments:
+            return False
+        for cell in cells.values():
+            if not _has_numeric_fields(cell, ("cd_accuracy", "delta")):
+                return False
+            if not 0 <= cell["cd_accuracy"] <= 1:
+                return False
+            if not _approximately_equal(cell["delta"], cell["cd_accuracy"] - row["baseline"]):
+                return False
+    return True
 
 
 def wilson_ci(n_correct, n_total, z=1.96):
@@ -312,9 +610,10 @@ class KMeansCentroids:
 
     def replace(self, x, alpha_interp=0.0):
         self.to_device(x.device)
-        dists = torch.cdist(x.unsqueeze(0), self.mu.unsqueeze(0))[0]
+        centers = self.mu if self.mu.dtype == x.dtype else self.mu.to(dtype=x.dtype)
+        dists = torch.cdist(x.unsqueeze(0), centers.unsqueeze(0))[0]
         k_idx = dists.argmin(dim=1)
-        mu_k = self.mu[k_idx]
+        mu_k = centers[k_idx]
         return mu_k + alpha_interp * (x - mu_k)
 
 
@@ -385,7 +684,10 @@ class TextCDHook:
                 continue
             tokens = h[0, start:end, :].float()
             if tokens.shape[1] != self.mfa.mu.shape[1]:
-                continue
+                raise ValueError(
+                    f"runtime hidden width {tokens.shape[1]} does not match "
+                    f"centroid width {self.mfa.mu.shape[1]}"
+                )
             replaced = self.mfa.replace(tokens, self.alpha_interp)
             h[0, start:end, :] = replaced.to(dtype)
 
@@ -865,9 +1167,13 @@ def run_sweep(model, processor, model_name, lm_layers, device,
                     if ve > vs and ve - vs >= 2:
                         vis_mfa.to_device(dev)
                         tokens = h[0, vs:ve, :].float()
-                        if tokens.shape[1] == vis_mfa.mu.shape[1]:
-                            replaced = vis_mfa.replace(tokens, 0.0)
-                            h[0, vs:ve, :] = replaced.to(dtype)
+                        if tokens.shape[1] != vis_mfa.mu.shape[1]:
+                            raise ValueError(
+                                f"runtime hidden width {tokens.shape[1]} does not "
+                                f"match visual-centroid width {vis_mfa.mu.shape[1]}"
+                            )
+                        replaced = vis_mfa.replace(tokens, 0.0)
+                        h[0, vs:ve, :] = replaced.to(dtype)
                     return (h,) + output[1:] if isinstance(output, tuple) else h
 
                 handle = lm_layers[vis_layer].register_forward_hook(vis_hook_fn)
@@ -1167,9 +1473,70 @@ def run_sweep(model, processor, model_name, lm_layers, device,
 
 # ── Main ──
 
+def _parse_unique_finite_float_list(raw, option):
+    """Parse a nonempty comma-separated float list before expensive work."""
+    parts = [part.strip() for part in raw.split(",")]
+    if not parts or any(not part for part in parts):
+        raise SystemExit(f"{option} must be a nonempty comma-separated list")
+    try:
+        values = [float(part) for part in parts]
+    except ValueError as exc:
+        raise SystemExit(f"{option} must contain only numbers") from exc
+    if not all(math.isfinite(value) for value in values):
+        raise SystemExit(f"{option} values must be finite")
+    if len(values) != len(set(values)):
+        raise SystemExit(f"{option} contains duplicate values")
+    return values
+
+
+def _parse_unique_segments(raw):
+    """Parse and validate positional segment names before model loading."""
+    segments = [segment.strip() for segment in raw.split(",")]
+    if not segments or any(not segment for segment in segments):
+        raise SystemExit("--segments must be a nonempty comma-separated list")
+    if len(segments) != len(set(segments)):
+        raise SystemExit("--segments contains duplicate values")
+    allowed = {"options", "question", "system"}
+    unknown = [segment for segment in segments if segment not in allowed]
+    if unknown:
+        raise SystemExit(f"--segments: unknown segment(s) {unknown}")
+    return segments
+
+
+def _validate_sweep_options(
+    *,
+    alpha_cd,
+    kmeans_seed,
+    sweep_alphas,
+    custom_alphas,
+    segments_only,
+    no_segments,
+    custom_segments,
+    custom_segment_alphas,
+):
+    """Reject contradictory or late-failing sweep configurations early."""
+    if not math.isfinite(alpha_cd):
+        raise SystemExit("--alpha_cd must be finite")
+    if not 0 <= kmeans_seed <= 2**32 - 1:
+        raise SystemExit("--kmeans_seed must be between 0 and 2^32 - 1")
+    if segments_only and no_segments:
+        raise SystemExit("--segments_only conflicts with --no_segments")
+    if no_segments and (custom_segments or custom_segment_alphas):
+        raise SystemExit(
+            "--segments/--segment_alphas cannot be used with --no_segments"
+        )
+    if segments_only and custom_alphas:
+        raise SystemExit("--alphas is unused with --segments_only")
+    if not segments_only and SEGMENT_ALPHA not in sweep_alphas:
+        raise SystemExit(
+            f"--alphas must include {SEGMENT_ALPHA} for the fixed-alpha "
+            "summary and default segment ablation"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Consistent cross-model sweep for arXiv (Phase 2)")
+        description="Maintained seven-model Phase-2 paper sweep")
     parser.add_argument("--models", type=str,
                         default=",".join(ALL_MODELS),
                         help="Comma-separated model names (default: all 7)")
@@ -1210,22 +1577,29 @@ def main():
     MAX_IMAGES = 2000
     KMEANS_SEED = args.kmeans_seed
     SWEEP_ALPHAS = (
-        [float(x) for x in args.alphas.split(",")]
-        if args.alphas
+        _parse_unique_finite_float_list(args.alphas, "--alphas")
+        if args.alphas is not None
         else list(DEFAULT_SWEEP_ALPHAS)
     )
     SEG_DOSE_SEGMENTS = None
     SEG_DOSE_ALPHAS = None
-    if args.segments:
-        SEG_DOSE_SEGMENTS = [s.strip() for s in args.segments.split(",")]
-        for s in SEG_DOSE_SEGMENTS:
-            if s not in ("options", "question", "system"):
-                raise SystemExit(f"--segments: unknown segment '{s}'")
-    if args.segment_alphas:
-        SEG_DOSE_ALPHAS = [float(x) for x in args.segment_alphas.split(",")]
+    if args.segments is not None:
+        SEG_DOSE_SEGMENTS = _parse_unique_segments(args.segments)
+    if args.segment_alphas is not None:
+        SEG_DOSE_ALPHAS = _parse_unique_finite_float_list(
+            args.segment_alphas, "--segment_alphas"
+        )
     SEGMENTS_ONLY = args.segments_only
-    if SEGMENTS_ONLY and args.no_segments:
-        raise SystemExit("--segments_only conflicts with --no_segments")
+    _validate_sweep_options(
+        alpha_cd=args.alpha_cd,
+        kmeans_seed=KMEANS_SEED,
+        sweep_alphas=SWEEP_ALPHAS,
+        custom_alphas=args.alphas is not None,
+        segments_only=SEGMENTS_ONLY,
+        no_segments=args.no_segments,
+        custom_segments=args.segments is not None,
+        custom_segment_alphas=args.segment_alphas is not None,
+    )
     if SEGMENTS_ONLY:
         if SEG_DOSE_SEGMENTS is None:
             SEG_DOSE_SEGMENTS = ["options", "question", "system"]
@@ -1275,6 +1649,9 @@ def main():
         "model_revisions": {
             model: MODEL_REGISTRY[model].revision for model in models
         },
+        "model_ids": {
+            model: MODEL_REGISTRY[model].model_id for model in models
+        },
         "model_code_revisions": {
             model: MODEL_REGISTRY[model].code_revision for model in models
         },
@@ -1302,7 +1679,7 @@ def main():
         _write_json_atomic(out_dir / "config.json", config)
 
     print(f"{'='*65}")
-    print("  Cross-Model Sweep v2 (arXiv Phase 2)")
+    print("  Maintained Seven-Model Phase-2 Paper Sweep")
     print(f"{'='*65}")
     print(f"  Models:     {models}")
     print(f"  Protocol:   N={MAX_IMAGES}, K={K}, α_cd={alpha_cd}")
@@ -1339,7 +1716,13 @@ def main():
                 existing_result = json.loads(out_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 raise SystemExit(f"cannot read existing result {out_path}: {exc}") from exc
-            if not _result_complete(existing_result, expected_counts, config):
+            if not _result_complete(
+                existing_result,
+                expected_counts,
+                config,
+                run_dir=out_dir,
+                expected_model=model_name,
+            ):
                 raise SystemExit(
                     f"refusing resume: existing result is incomplete: {out_path}"
                 )
@@ -1389,7 +1772,6 @@ def main():
                     "centroid_fit": fit_provenance,
                 },
             )
-            artifact["relative_path"] = centroid_path.name
             provenance = {
                 "model": model_provenance,
                 "datasets": {
@@ -1433,7 +1815,14 @@ def main():
             )
             eval_time = (time.time() - t_eval) / 60
             results["_provenance"] = provenance
-            if not _result_complete(results, expected_counts, config):
+            results["_status"] = "complete"
+            if not _result_complete(
+                results,
+                expected_counts,
+                config,
+                run_dir=out_dir,
+                expected_model=model_name,
+            ):
                 raise SweepFailure(
                     "result_validation",
                     "one or more requested task/count/alpha/segment cells are missing",
