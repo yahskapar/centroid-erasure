@@ -371,10 +371,15 @@ def fixed_cd_baselines() -> dict[str, Any]:
     assert len(tasks) == 6
     assert set(payload["methods"]) == {"dola_low", "dola_high", "sdcd"}
 
-    expected_reported_pp = {
+    expected_historical_reported_pp = {
         "dola_low": 1.61,
         "dola_high": 3.42,
         "sdcd": 0.88,
+    }
+    expected_paper_pp = {
+        "dola_low": 1.61,
+        "dola_high": 3.42,
+        "sdcd": 0.87,
     }
     baseline_counts: dict[str, tuple[int, int]] = {}
     summaries = {}
@@ -409,15 +414,18 @@ def fixed_cd_baselines() -> dict[str, Any]:
         close(method["mean_delta_pp"], 100 * mean_delta)
         close(
             method["reported_mean_delta_pp"],
-            expected_reported_pp[method_name],
+            expected_historical_reported_pp[method_name],
         )
         close(
             method["reported_mean_delta"],
-            expected_reported_pp[method_name] / 100,
+            expected_historical_reported_pp[method_name] / 100,
         )
+        paper_rounded_pp = round(100 * mean_delta, 2)
+        close(paper_rounded_pp, expected_paper_pp[method_name])
         summaries[method_name] = {
             "exact_count_reconstruction_pp": 100 * mean_delta,
-            "paper_reported_pp": method["reported_mean_delta_pp"],
+            "paper_rounded_from_exact_pp": paper_rounded_pp,
+            "historical_reported_pp": method["reported_mean_delta_pp"],
         }
     return summaries
 

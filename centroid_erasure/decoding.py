@@ -80,13 +80,13 @@ def tccd(model, inputs, hook, alpha_cd=DEFAULT_ALPHA_CD):
 
 # ── alpha selection protocols ──
 #
-# Reported side by side in the paper because they answer different questions.
-# "best" is an oracle upper bound and must never be presented as deployable.
+# These protocols answer different evaluation questions. ``best`` selects on
+# the evaluated task itself and is therefore an oracle upper bound.
 
 PROTOCOLS = {
-    "fixed": "Single alpha_interp for every task (paper: 0.4). What you deploy.",
-    "cv": "Leave-one-task-out cross-validated alpha. No held-out-task tuning.",
-    "best": "Best per-task alpha. ORACLE UPPER BOUND, not deployable.",
+    "fixed": "One alpha_interp for every task (paper: 0.4); fixed deployment setting.",
+    "cv": "Leave-one-task-out cross-validated alpha; held-out task estimate.",
+    "best": "Best alpha on each evaluated task; oracle upper bound.",
 }
 
 FIXED_ALPHA_INTERP = 0.4

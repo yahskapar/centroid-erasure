@@ -126,12 +126,12 @@ echo "    exit=$MEAS" | tee -a "$LOG"
 
 # ---------- [3] compare against the published run ----------
 #
-# TOLERANCE, and why it is tight by default:
-# the default run reads centroids/qwen.npz, which is BYTE-IDENTICAL to the bank
+# Tolerance is tight by default because the run reads centroids/qwen.npz, which
+# is byte-identical to the bank
 # behind the published results, over the full split. Nothing is fitted, so the
 # K-means backend plays no part and the protocol, data and scoring all match.
 # That should reproduce to within GPU nondeterminism (about one item per task).
-# A loose bar here would let a genuinely broken environment report success.
+# A loose bar here could hide an incompatible environment.
 # --quick samples, so it gets the loose directional bar instead.
 echo "[3] comparing against the published Qwen2.5-VL-7B run ..." | tee -a "$LOG"
 $PY - "$OUT/measure.json" "$REPO/demo/fixtures/qwen_expected.json" "$QUICK" <<'PY' 2>&1 | tee -a "$LOG"
@@ -241,7 +241,7 @@ if [ $QUICK = 1 ]; then
   echo " Only the direction and a rough magnitude are checked. Run without"
   echo " --quick for the strict comparison."
 else
-  echo " The default path reads the SHIPPED centroid bank, which is byte-identical"
+  echo " The default path reads the shipped centroid bank, which is byte-identical"
   echo " to the published one, and fits nothing. The K-means backend is therefore"
   echo " irrelevant here, and this should reproduce to within GPU nondeterminism."
   echo " A large gap points at an environment problem, not at sampling noise."

@@ -4,11 +4,9 @@ COCO loader for centroid fitting.
 Loads MS-COCO images from HuggingFace with a generic prompt, for fitting
 centroids on data independent of the BLINK evaluation set.
 
-The FIRST source below is the one the published pipeline used
-(pipeline/paper_sweep.py: detection-datasets/coco, split='train', streamed
-and shuffled with the data seed). Refitting from a different source gives
-an internally consistent but DIFFERENT centroid set, so keep this first
-unless you intend to diverge from the paper.
+The primary source below matches the published fit
+(`detection-datasets/coco`, `train`, streamed and shuffled with the data seed).
+Alternate mirrors produce different centroid banks and are explicit fallbacks.
 
 Datasets tried (in order):
   1. detection-datasets/coco (split="train")   <- the published source
@@ -22,7 +20,7 @@ from typing import List, Optional
 
 # (dataset_id, split, image_key) — tried in order
 _COCO_SOURCES = [
-    # Published-pipeline source. Do not reorder without expecting drift.
+    # Primary source used for the published fit; source changes move the bank.
     ("detection-datasets/coco", "train", "image"),
     # Fallbacks, only if the primary source is unavailable.
     ("HuggingFaceM4/COCO", "val", "image"),

@@ -1,8 +1,6 @@
-# Pinned to the exact recorded loading, preprocessing, and evaluation
-# environment that reproduced the published numbers with the shipped banks.
-# The intervention hooks internal hidden states, so it is sensitive to
-# transformers internals; loosening the transformers pin is the most likely
-# cause of a run that does not reproduce.
+# Pinned to the environment used for the published measurements. The
+# intervention hooks internal hidden states, so Transformer versions can change
+# the measured activations and should remain pinned for reference comparisons.
 
 torch==2.6.0
 torchvision==0.21.0
@@ -19,13 +17,13 @@ tqdm==4.67.3
 huggingface-hub==1.8.0
 pandas==2.3.3
 
-# Required by the released crossed-REML/Hake/specificity refit.
+# Required for supplementary statistical analyses.
 statsmodels==0.14.2
 
 # Optional. faiss-gpu makes centroid fitting much faster; without a visible
 # FAISS GPU the code falls back to sklearn MiniBatchKMeans, which gives
-# slightly different centers. The original fit's FAISS package version was
-# unfortunately not logged, so no false exact pin is supplied here.
+# slightly different centers. The original fit's FAISS package version was not
+# recorded, so no exact version is pinned here.
 # Install a CUDA-compatible faiss-gpu build separately when refitting.
 
 # Required for the registry entries that load quantised (medgemma, medgemma_27b,

@@ -1,7 +1,7 @@
 # Supplementary method records
 
 Files ending in `.py.txt` are non-executable protocol records. Run outputs,
-machine-local paths, and discussion text are excluded. Public dependencies use
+machine-local paths, and local notes are excluded. Public dependencies use
 `centroid_erasure` or `pipeline` names; a `protocol_snapshot` placeholder marks
 helper logic without a public standalone module and is not an import target.
 
@@ -10,18 +10,19 @@ porting. They are not a second supported interface and are not imported by
 the parent package. Current reruns should use the maintained modules in
 `centroid_erasure/` and the paper sweep in `pipeline/`.
 
-`rebuttal_asymmetry_breadth.py.txt` preserves the historical breadth run: its
-MCQA path scores space-prefixed single-token labels and is not the canonical
-bare continuation-label protocol; its separate MME yes/no path remains a valid
-option-letter-free binary control. `rebuttal_label_asymmetry.py.txt` preserves a
-related scoring-mismatched option-relabeling run solely as audit history. The
-raw snapshots are unchanged; their evidence statuses are recorded in the
-result indexes and concise protocol records.
+The historical protocol snapshots retain their original filenames for exact
+manifest and checksum matching. `rebuttal_asymmetry_breadth.py.txt` records a
+breadth run whose MCQA path scores space-prefixed single-token labels rather
+than the canonical bare continuation-label protocol; its separate MME yes/no
+path remains a valid option-letter-free binary control.
+`rebuttal_label_asymmetry.py.txt` records a related scoring-mismatched
+option-relabeling run as archival provenance. Their evidence statuses are
+recorded in the result indexes and concise protocol records.
 
 `centroid_variance_factorial.py.txt` records the separate K=512
 scikit-learn 3×5 sensitivity protocol. It hard-codes the retained
-`alpha_cd=1.0` setting and must not be confused with the canonical K=256
-faiss refits or treated as a supported runner.
+`alpha_cd=1.0` setting. This archival snapshot is distinct from the canonical
+K=256 faiss refits and is not a supported runner.
 
 `cd_fixed_baselines_protocol.md` records the fixed DoLa-low/high and SDCD
 settings behind the released aggregate task and discordance counts. It is a
@@ -44,7 +45,7 @@ The additional concise protocol records cover the two MedGemma aggregate
 sweeps, sink/dead token-activation L2-norm filtering, negative-alpha
 directionality, N-by-K scaling,
 centroid-source transfer, the sixteen-layer text sweep, preliminary
-calibration, the selected Figure 1 post-RoPE attention audit, its historical
+calibration, the selected Figure 1 post-RoPE attention check, its historical
 pre-RoPE QK-proxy record and restored qualitative-display status, and full-split shipped-bank
 verification. `generative_paired_tests.md` distinguishes fractional-score
 paired t-tests from binary exact-match McNemar inference, and

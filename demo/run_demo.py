@@ -13,8 +13,8 @@ What you should see:
   1. Erasing TEXT activations costs far more accuracy than erasing VISUAL
      activations. That gap is the paper's central measurement.
   2. TCCD, which contrasts against the erased pass, recovers accuracy on
-     Forensic Detection and Visual Similarity (TEXT-COMPETES tasks) and does
-     not help Counting (a TEXT-NEEDED task).
+     Forensic Detection and Visual Similarity (TEXT-COMPETES tasks) and has a
+     smaller or inconsistent effect on Counting (a TEXT-NEEDED task).
 
 Numbers will not match the paper exactly, because this demo runs a subset of
 samples. It does NOT refit anything: the shipped bank is byte-identical to the
@@ -43,8 +43,8 @@ from centroid_erasure.constants import ALL_LETTERS  # noqa: E402
 from centroid_erasure.data.utils import parse_mc_answer  # noqa: E402
 from centroid_erasure.eval_mcqa import get_choice_token_ids  # noqa: E402
 
-# Two TEXT-COMPETES tasks and one TEXT-NEEDED task, so the selectivity of the
-# correction is visible rather than asserted.
+# Two TEXT-COMPETES tasks and one TEXT-NEEDED task illustrate both response
+# patterns.
 DEMO_TASKS = ["Forensic_Detection", "Visual_Similarity", "Counting"]
 TEXT_COMPETES = {"Forensic_Detection", "Visual_Similarity"}
 
@@ -54,13 +54,19 @@ def predict(logits, choice_ids):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="qwen")
-    ap.add_argument("--centroids", default=None)
+    ap = argparse.ArgumentParser(
+        description="Run a compact BLINK demo of centroid replacement and TCCD."
+    )
+    ap.add_argument("--model", default="qwen",
+                    help="registry key (default: qwen = Qwen2.5-VL-7B)")
+    ap.add_argument("--centroids", default=None,
+                    help="centroid-bank .npz; defaults to centroids/<model>.npz")
     ap.add_argument("--max-per-task", type=int, default=40, dest="max_per_task",
                     help="samples per task; raise for a tighter estimate")
-    ap.add_argument("--alpha-interp", type=float, default=0.4, dest="alpha_interp")
-    ap.add_argument("--alpha-cd", type=float, default=1.0, dest="alpha_cd")
+    ap.add_argument("--alpha-interp", type=float, default=0.4, dest="alpha_interp",
+                    help="replacement interpolation (default: 0.4)")
+    ap.add_argument("--alpha-cd", type=float, default=1.0, dest="alpha_cd",
+                    help="contrastive decoding strength (default: 1.0)")
     args = ap.parse_args()
     if args.max_per_task <= 0:
         raise SystemExit("--max-per-task must be positive")
@@ -97,8 +103,8 @@ def main():
         or text_bank.meta.get("span_fallbacks", 0)
     ):
         raise SystemExit(
-            "demo refuses a bank fitted with the unvalidated positional "
-            "visual-span fallback"
+            "demo requires marker-located visual spans; this bank records the "
+            "approximate positional fallback"
         )
     if (
         text_bank.meta["layer"] != PAPER_PROTOCOL["text_layer"]
@@ -204,7 +210,7 @@ def main():
     print(" * = TEXT-COMPETES task (TCCD is expected to help)")
     print()
 
-    print(" VERDICTS")
+    print(" SUMMARY CHECKS")
     v1 = mt > mv
     print(f"   text cost exceeds visual cost          : {'PASS' if v1 else 'FAIL'}"
           f"  ({mt:+.3f} vs {mv:+.3f})")
@@ -214,7 +220,7 @@ def main():
     print(f"   TCCD helps COMPETES more than NEEDED   : {'PASS' if v2 else 'FAIL'}"
           f"  ({sum(comp)/len(comp):+.3f} vs {sum(need)/len(need):+.3f})")
     print()
-    print(" Small samples are noisy. Raise --max-per-task if a verdict is")
+    print(" Small samples are noisy. Raise --max-per-task if a check is")
     print(" borderline; the published run uses the full BLINK val split.")
 
     out = repo / "results" / "demo_results.json"

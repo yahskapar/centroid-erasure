@@ -11,7 +11,7 @@ from datasets import load_dataset as hf_load
 from typing import Dict, List, Optional
 
 
-# Immutable dataset commit used by the camera-ready release. Pinning the
+# Immutable dataset commit used for the published results. Pinning the
 # revision protects sample order, prompts, images, and answer labels.
 BLINK_REVISION = "a3666eb249237ba3d5eca8db21176cc47967e040"
 

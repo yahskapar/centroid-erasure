@@ -182,8 +182,8 @@ def test_load_bank_enforces_registry_revision_layer_and_span_provenance(
         ({"model_id": "wrong/model"}, "does not match registry model ID"),
         ({"model_revision": "wrong-revision"}, "does not match registry revision"),
         ({"layer": 16}, "not requested L12"),
-        ({"span_fallbacks": 1}, "unvalidated visual-span fallback"),
-        ({"allow_visual_span_fallback": True}, "unvalidated visual-span fallback"),
+        ({"span_fallbacks": 1}, "approximate positional visual-span fallback"),
+        ({"allow_visual_span_fallback": True}, "approximate positional visual-span fallback"),
     ):
         install({**valid, **update})
         with pytest.raises(SystemExit, match=message):
@@ -347,7 +347,7 @@ def test_compare_to_published_strict_success_and_missing_fixture(
     )
     output = capsys.readouterr().out
     assert "sample-count mismatch" in output
-    assert "every task within 2 items          : REVIEW" in output
+    assert "every task within 2 items          : CHECK" in output
 
     cli._compare_to_published("absent", results, 0.2, 0.1)
     assert "no published reference for 'absent'" in capsys.readouterr().out

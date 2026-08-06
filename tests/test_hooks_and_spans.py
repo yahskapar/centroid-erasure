@@ -68,7 +68,7 @@ def test_hook_fails_closed_on_unknown_span_and_fallback_is_explicit(monkeypatch)
     strict = CentroidReplacementHook(
         None, bank, "unknown", None, modality="visual"
     )
-    with pytest.raises(RuntimeError, match="refusing the positional heuristic"):
+    with pytest.raises(RuntimeError, match="approximate positional fallback"):
         strict._spans(hidden)
     assert strict._span_failures == 1
 

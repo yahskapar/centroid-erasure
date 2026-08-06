@@ -71,8 +71,8 @@ def find_visual_token_range(
         raise ValueError(
             f"No visual token finder for '{model_name}'. This model is not "
             "validated for centroid measurement. Add a finder (docs/EXTENDING.md), "
-            "or explicitly opt into the positional heuristic for exploratory "
-            "results that must not be reported as validated."
+            "or explicitly opt into the approximate positional fallback for "
+            "exploratory use."
         )
     start, end = span
     if not 0 <= start < end <= seq_len:

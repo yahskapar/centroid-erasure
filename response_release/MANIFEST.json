@@ -12,7 +12,7 @@
         "models": 10,
         "non_chance_cells": 70
       },
-      "note": "Split evidence status: the 70 MCQA cells use a historical space-prefixed answer-token logit scorer and are audit history, not canonical-scoring evidence; the 10 MME cells use a separately retained option-letter-free binary scorer. Qwen2-VL is excluded. Historical response-run paired p-values are integrity-only because b/c counts are unavailable.",
+      "note": "Split evidence status: the 70 MCQA cells use a historical space-prefixed answer-token logit scorer and are archival records, not canonical-scoring evidence; the 10 MME cells use a separately retained option-letter-free binary scorer. Qwen2-VL is excluded. Historical paired p-values are integrity-only because b/c counts are unavailable.",
       "result": "results/breadth_index.json",
       "result_sha256": "baee6f88dca84b3e96bfe306bc9dd5221a7993ee1bbcf6a7e7a58cc9170addf0",
       "status": "historical_mcqa_scoring_variant_with_retained_mme_binary_control"
@@ -67,7 +67,7 @@
         "conditions": 3,
         "tasks": 6
       },
-      "note": "Not retained as evidence: the historical space-prefixed answer-token scorer does not match the canonical bare continuation-label scorer, and the A/B/C/D anchor does not reproduce the canonical run. Exact aggregates and stability counts remain checksum-covered audit history only.",
+      "note": "Not retained as evidence: the historical space-prefixed answer-token scorer does not match the canonical bare continuation-label scorer, and the A/B/C/D anchor does not reproduce the canonical run. Exact aggregates and stability counts remain checksum-covered archival records only.",
       "result": "results/label_stability.json",
       "result_sha256": "4c4daff62b54145bbd2a2ae419c869206e1ccf875b65a6927918d71df90d3450",
       "status": "not_retained_scoring_mismatch"
@@ -123,7 +123,7 @@
     {
       "claim_id": "mmbench_circular_canonical",
       "method": "scripts/recompute_claims.py",
-      "method_sha256": "c25b4134f279ee77a169236d44cb21a60982d0eb4bbf717ee3819cdba0661b29",
+      "method_sha256": "ce2fcc31820863cd49db92a755fbac1bd9d4feb47098cc90bf481632fa06e0e4",
       "n": 938,
       "note": "Restricted to bases with four canonical rotations.",
       "result": "results/mmbench_circular_canonical.json",
@@ -133,7 +133,7 @@
     {
       "claim_id": "mmbench_portfolio_canonical",
       "method": "scripts/recompute_claims.py",
-      "method_sha256": "c25b4134f279ee77a169236d44cb21a60982d0eb4bbf717ee3819cdba0661b29",
+      "method_sha256": "ce2fcc31820863cd49db92a755fbac1bd9d4feb47098cc90bf481632fa06e0e4",
       "n": 1176,
       "note": "Canonical one-row-per-base aggregation with sufficient 2x2 flip cross-tabs for all three reported correlations.",
       "result": "results/mmbench_portfolio_canonical.json",
@@ -253,7 +253,7 @@
     {
       "claim_id": "generative_checks",
       "method": "scripts/recompute_claims.py",
-      "method_sha256": "c25b4134f279ee77a169236d44cb21a60982d0eb4bbf717ee3819cdba0661b29",
+      "method_sha256": "ce2fcc31820863cd49db92a755fbac1bd9d4feb47098cc90bf481632fa06e0e4",
       "n": {
         "captioning": 2000,
         "docvqa": 300,
@@ -325,7 +325,7 @@
       "method": "methods/centroid_source_transfer_protocol.md",
       "method_sha256": "0839c9683ffa126b91b63c29008ce0c11dadcf3d04089447802283ed386b074e",
       "n": {"tasks": 6, "source_columns": 4},
-      "note": "Provenance-aware composite; the historical all_blink label is corrected to all six deep-dive tasks. Fit, pipeline, alpha_cd, and alpha-selection differences preclude causal comparison.",
+      "note": "Provenance-aware composite; the historical all_blink label is corrected to all six primary tasks. Fit, pipeline, alpha_cd, and alpha-selection differences preclude causal comparison.",
       "result": "results/centroid_source_transfer.json",
       "result_sha256": "15d2d1d7e6f9c62bb816ddcccc2a488f0a39459945314da100db51e822c04967",
       "status": "retained_descriptive_composite"
@@ -335,7 +335,7 @@
       "method": "methods/figure1_attention_protocol.md",
       "method_sha256": "7508df342b4e32e3348aa0ddfd666aea0ab12e3cba0527b5b6f530a79c50e226",
       "n": {"selected_examples": 1, "layers": 3},
-      "note": "Pinned selected-exemplar rerun reconstructing actual post-RoPE attention at inherited layers. L22 visual-span mass is 3.63% in the original and 11.09% in the text-replaced reference; both predict A, while the separate TCCD logit combination predicts B. Selected descriptive evidence, not aggregate or mechanism evidence. By final author design choice, the active artwork restores the response-era overlays only as qualitative QK proxies; the corrected audit remains the numerical attention evidence.",
+      "note": "Pinned selected-exemplar rerun reconstructing actual post-RoPE attention at inherited layers. L22 visual-span mass is 3.63% in the original and 11.09% in the text-replaced reference; both predict A, while the separate TCCD logit combination predicts B. Selected descriptive evidence, not aggregate or mechanism evidence. The paper displays the historical overlays only as qualitative QK proxies; this rerun supplies the numerical attention values.",
       "result": "results/figure1_attention_exemplar.json",
       "result_sha256": "02c82d36c3b4049c039b662202616c2e7ad88b72eb9dc885e154912569cbbf92",
       "status": "retained_qualitative_post_rope_attention_exemplar"
@@ -428,7 +428,7 @@
   "status_taxonomy": {
     "historical_mcqa_scoring_variant_with_retained_mme_binary_control": "Mixed-status breadth record: historical noncanonical MCQA scoring plus retained option-letter-free MME evidence.",
     "implementation_verification": "Public-code/artifact verification, not a new scientific experiment.",
-    "not_retained_scoring_mismatch": "Preserved solely as audit history after a protocol-scoring mismatch; not scientific evidence.",
+    "not_retained_scoring_mismatch": "Preserved as an archival record after a protocol-scoring mismatch; not scientific evidence.",
     "retained": "Retained under its stated protocol and scope.",
     "retained_corrected": "Retained after a documented correction.",
     "retained_descriptive": "Retained for descriptive, noncausal interpretation.",
@@ -440,11 +440,11 @@
     "retained_negative": "Retained negative or scope-limiting result.",
     "retained_preliminary_directional": "Retained preliminary directional sensitivity, not a final-protocol estimate.",
     "retained_preliminary_negative_calibration": "Retained preliminary negative calibration diagnostic.",
-    "retained_qualitative_post_rope_attention_exemplar": "Retained selected post-RoPE attention audit with separate reference-pass and TCCD semantics; numerical evidence is distinct from the restored qualitative pre-RoPE overlays and is not aggregate or mechanism evidence.",
+    "retained_qualitative_post_rope_attention_exemplar": "Retained selected post-RoPE attention check with separate reference-pass and TCCD semantics; numerical evidence is distinct from the restored qualitative pre-RoPE overlays and is not aggregate or mechanism evidence.",
     "retained_relabelled": "Retained after replacing an invalid semantic label with a descriptive positional label.",
     "retained_scoped": "Retained with a narrow interpretation boundary."
   },
   "format_version": 3,
-  "content_scope": "aggregate or derived experimental records, scoped implementation-verification metadata, and sanitized protocol material",
-  "release_scope": "camera-ready analyses, scoped implementation verification, explicit integrity-only historical fields, and not-retained audit records"
+  "content_scope": "aggregate or derived experimental records, scoped implementation-verification metadata, and public protocol material",
+  "release_scope": "supplementary analyses, scoped implementation verification, and explicitly labeled historical or non-evidentiary records"
 }

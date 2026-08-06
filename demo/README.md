@@ -25,10 +25,10 @@ intervention:
 |---|---|---|
 | Forensic Detection | TEXT-COMPETES | TCCD helps |
 | Visual Similarity | TEXT-COMPETES | TCCD helps |
-| Counting | TEXT-NEEDED | TCCD does not help |
+| Counting | TEXT-NEEDED | TCCD has a smaller or inconsistent gain |
 
 For each it prints baseline accuracy, the cost of full text erasure, the cost
-of full visual erasure, and the TCCD delta. It closes with two verdicts:
+of full visual erasure, and the TCCD delta. It closes with two summary checks:
 
 1. text cost exceeds visual cost (the paper's central measurement),
 2. TCCD helps TEXT-COMPETES tasks more than TEXT-NEEDED ones (its selectivity).

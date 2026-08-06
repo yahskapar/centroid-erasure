@@ -16,10 +16,10 @@ from .visual_tokens import find_visual_token_range
 
 TEXT_SEGMENTS = ("all", "options", "question", "system")
 
-# Legacy names retained for bitwise fidelity and fixture compatibility:
+# Positional segment labels used by the published pipeline and its fixtures:
 # "question" = first 70% of the post-image tail, "options" = last 30%, and
-# "system" = the pre-visual prefix (including template/control tokens). The
-# published pipeline did not parse semantic question/option/system boundaries.
+# "system" = the pre-visual prefix (including template/control tokens). These
+# labels do not represent parsed semantic question/option/system boundaries.
 OPTION_BOUNDARY_FRAC = 0.7
 
 # Minimum visual span the published hook will act on (`ve - vs >= 2`).
@@ -44,13 +44,13 @@ class CentroidReplacementHook:
         layer: decoder layer index to hook. Paper: 12 for text, 16 for visual.
         alpha_interp: 0.0 = full collapse, 1.0 = identity. Paper default 0.4.
         modality: "text" or "visual".
-        segment: for text only — legacy positional-span identifier. ``all``
+        segment: for text only — positional-span label. ``all``
             rewrites the post-image tail, ``question`` its first 70%,
             ``options`` its last 30%, and ``system`` the pre-visual prefix.
             These names do not denote parsed semantic boundaries.
-        allow_span_fallback: opt into the historical positional heuristic when
+        allow_span_fallback: opt into the approximate positional heuristic when
             architecture-specific visual-token detection fails. Disabled by
-            default so trusted runs cannot silently use guessed spans.
+            default because guessed spans can change the measured effects.
     """
 
     def __init__(
@@ -111,11 +111,11 @@ class CentroidReplacementHook:
             self._span_failures += 1
             if not self.allow_span_fallback:
                 raise RuntimeError(
-                    "visual-token span detection failed; refusing the positional "
-                    "heuristic. Add an architecture-specific finder, or explicitly "
-                    "set allow_span_fallback=True for an unvalidated exploratory run."
+                    "visual-token span detection failed. Add an architecture-specific "
+                    "finder, or set allow_span_fallback=True for exploratory use of "
+                    "the approximate positional fallback."
                 ) from exc
-            # Historical positional heuristic, available only by explicit opt-in.
+            # Approximate positional heuristic, available only by explicit opt-in.
             vis_end = max(int(seq_len * 0.7), seq_len - 100)
             vis_start = 10
 

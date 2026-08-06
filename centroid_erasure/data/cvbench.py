@@ -46,8 +46,11 @@ def load_cvbench(
     try:
         ds = hf_load(hf_repo, split=split, revision=resolved_revision)
     except Exception as e:
-        print(f"    ⚠ Failed: {e}")
-        print("    (CV-Bench may require a different repo ID.)")
+        print(
+            f"    ⚠ Failed to load {hf_repo} at revision "
+            f"{resolved_revision or 'default'}: {e}"
+        )
+        print("    Check network access, or pass a custom hf_repo and revision.")
         return {}
 
     tasks = {"2d_spatial": [], "3d_depth": []}

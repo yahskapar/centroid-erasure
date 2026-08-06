@@ -1,10 +1,10 @@
-# Phase-2 reference pipeline
+# Paper sweep pipeline
 
-`paper_sweep.py` is the six-task, seven-model sweep behind the released
-centroid banks and Phase-2 fixtures. It fits a fresh text/visual centroid pair
-for every model, then runs centroid sufficiency, the interpolation sweep, and
-the segment ablation. Supplementary analyses are documented separately in
-`response_release/`.
+`paper_sweep.py` is the six-task, seven-model sweep used to fit the released
+centroid banks and produce the primary reference fixtures. It fits a fresh
+text/visual centroid pair for every model, then runs centroid sufficiency, the
+interpolation sweep, and the segment ablation. Supplementary analyses are
+documented separately in `response_release/`.
 
 ## Paper protocol
 

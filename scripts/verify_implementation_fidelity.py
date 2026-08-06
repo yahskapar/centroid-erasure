@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Verify the public library against the paper's reference implementation.
+"""Compare the public library with the paper's reference implementation.
 
-This reader-facing check exercises the exact equivalences claimed in the
-paper: centroid replacement across strengths, positional text-span handling,
-visual-span handling, and the contrastive-logit direction. It runs on CPU and
-does not download a model or dataset.
+The check covers centroid replacement across strengths, positional text-span
+handling, visual-span handling, and the contrastive-logit direction. It runs
+on CPU and does not download a model or dataset.
 """
 
 from __future__ import annotations

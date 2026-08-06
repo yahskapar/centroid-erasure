@@ -1,9 +1,7 @@
 """
 Shared constants for the evaluation pipeline.
 
-These were previously defined inside an exploratory experiment script in the
-working repo. They are lifted here so the published pipeline in pipeline/ and
-the library both depend on one definition.
+The library and paper pipeline import these shared definitions.
 """
 
 # Answer-letter tokens scored by the multiple-choice path. BLINK tasks have up

@@ -15,18 +15,16 @@ The paper introduces **centroid replacement**, a training-free probe that
 measures dependence on fine-grained text and visual structure by replacing a
 modality's activations with their nearest K-means centroids. Across seven
 models from four architecture families, text replacement costs about 4x more
-accuracy than visual replacement on the perception-competition benchmarks
-studied in the paper.
+accuracy than visual replacement on the six primary visual-perception tasks.
 
 The same intervention supports **text centroid contrastive decoding (TCCD)**,
 which contrasts a clean pass with a partially text-erased pass. Its recovery
 is task- and model-dependent, so the tools distinguish fixed, cross-validated,
 and oracle alpha-selection protocols.
 
-This repository focuses on what readers need to use and check the work: the
-reusable method and CLI, seven fitted centroid banks, reference sweep outputs,
-an end-to-end demo, the paper pipeline, and compact aggregate verification
-records for final-paper results.
+This repository provides the reusable method and CLI, seven fitted centroid
+banks, reference sweep outputs, an end-to-end demo, the paper pipeline, and
+compact aggregate records for reproducing and checking the reported results.
 
 # :notebook: Method
 
@@ -161,9 +159,9 @@ See [`docs/REPRODUCTION.md`](docs/REPRODUCTION.md) and
 resume behavior, and provenance.
 
 The small [`response_release/`](response_release/) directory is the
-machine-checkable final-paper analysis supplement—not a copy of the OpenReview
-discussion. It contains sanitized aggregate results, sufficient statistics,
-protocol records, checksums, and four CPU verification commands:
+machine-checkable supplementary analysis bundle. It contains
+aggregate results, sufficient statistics, protocol records, checksums, and four
+CPU verification commands:
 
 ```bash
 python response_release/scripts/recompute_claims.py

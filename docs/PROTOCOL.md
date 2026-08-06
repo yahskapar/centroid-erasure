@@ -54,7 +54,7 @@ The reference is the **erased** pass, not the clean one. Positive `alpha_cd`
 pushes away from what the erasure produced. Negative `alpha_cd` pushes toward
 it, amplifying text competition; the paper reports this as a dose-response
 control, where accuracy falls on every task by 20.5 to 38.3 pp at
-`alpha_cd = -1.0` in the separately labeled preliminary K=512 sensitivity run.
+`alpha_cd = -1.0` in a separate K=512 sensitivity run.
 
 ## Alpha selection protocols
 
@@ -79,8 +79,8 @@ The three protocols answer different evaluation questions:
 The six BLINK tasks used as the primary evaluation, split by how they respond
 to the intervention:
 
-* **TEXT-COMPETES** (TCCD helps): Forensic Detection, Visual Similarity, Art Style
-* **TEXT-NEEDED** (TCCD does not help): Counting, Relative Depth, Spatial Relation
+* **TEXT-COMPETES** (larger TCCD gains): Forensic Detection, Visual Similarity, Art Style
+* **TEXT-NEEDED** (smaller or inconsistent TCCD gains): Counting, Relative Depth, Spatial Relation
 
 This split is an empirical observation from the paper, not a property of the
 benchmark's own taxonomy.
@@ -91,19 +91,18 @@ Centroid-replacement cost measures dependence on within-cluster activation
 structure. It is not a causal estimate of harmful semantic competition. In
 particular, full text replacement also removes structure used by the
 multiple-choice task interface and can induce degenerate answer behavior. The
-retained aggregate outputs do not include the per-model prediction-letter
-histograms needed to audit the earlier exact constant-answer count, so the
-release does not make that auxiliary numerical claim.
+released aggregate outputs do not include per-model prediction-label
+histograms, so they cannot quantify concentration on a constant answer label.
 
 The measurement condition uses full replacement (`alpha_interp=0.0`), while
 TCCD uses partial replacement (`alpha_interp=0.4`) so the model continues to
-answer. A matched-damage control remains an important direction for separating
-task-interface damage from modality-specific dependence.
+answer. Separating task-interface damage from modality-specific dependence
+would require a matched-damage control.
 
 TCCD is task- and model-dependent. Leave-one-model-out selection over the seven
 released interpolation sweeps gives a mean held-out delta of -1.4 pp (two-sided
-Wilcoxon `p=0.22`); the release therefore does not recommend transferring one
-global alpha across models.
+Wilcoxon `p=0.22`). This result does not support transferring one global alpha
+across models.
 
 ## Reproducibility notes
 

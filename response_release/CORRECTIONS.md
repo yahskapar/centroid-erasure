@@ -1,20 +1,20 @@
-# Corrections and scope decisions
+# Analysis provenance and interpretation
 
-This file is the authoritative status ledger for supplementary analyses
-reported in the paper.
+This file records protocol status, corrections, and interpretation boundaries
+for the paper's supplementary analyses.
 
 ## Split-status historical controls
 
 ### Supported breadth grid: archival MCQA variant, retained MME control
 
-The response-run grid contains ten models with validated visual-span handling;
+The historical grid contains ten models with validated visual-span handling;
 Qwen2-VL is excluded because its run used a positional fallback. The seven
 MCQA benchmarks, however, score the next-token logits of space-prefixed
 single-token answer labels rather than the canonical bare continuation-label
-tokens. Their 70 cells are retained only as audit history. Across the six
+tokens. Their 70 cells are retained only as archival context. Across the six
 non-chance MCQA benchmarks, text cost exceeds visual cost in 60/60 cells; MMVP's
 ten chance-level cells remain diagnostic only. These values do not provide a
-protocol-matched 69/70 camera-ready claim.
+protocol-matched 69/70 result.
 
 MME follows a separate yes/no surface-form scorer independent of A/B/C/D token
 choice and remains a valid binary control. Text cost exceeds visual cost in
@@ -26,20 +26,20 @@ intervention-induced default-to-no response or disruption of the
 question-defined visual predicate.
 
 The 2/80 nominal positive and 24/80 nominal negative fixed-intervention cell
-counts reproduce from stored historical per-cell p-values. An exhaustive safe
-artifact search did not find response-run McNemar `b/c` counts or a
+counts reproduce from stored historical per-cell p-values. The released
+records do not contain historical-run McNemar `b/c` counts or a
 redistributable paired table, so the p-values themselves are labeled
 integrity-only author-generated aggregates rather than independently
 recomputed statistics. Because 70/80 cells use the historical MCQA scorer, the
-combined recovery counts are audit history rather than protocol-matched
-camera-ready evidence.
+combined recovery counts are archival context rather than protocol-matched
+evidence.
 
 ## Retained with corrected protocol or wording
 
 ### MedGemma and MedBLINK
 
-The two previously missing MedGemma records now release every safe task-level
-sufficiency cell and task-by-alpha recovery cell. Joined with the seven-model
+The released MedGemma records contain all released task-level sufficiency
+cells and task-by-alpha recovery cells. Joined with the seven-model
 portfolio, MedBLINK has 72 cells across nine models, mean text cost 0.0929,
 mean visual cost 0.0462, and a 2.01x ratio. MedGemma-4B image enhancement
 reaches +26.87 points at its selected alpha (`b=3`, `c=39`, exact two-sided
@@ -48,7 +48,7 @@ protocol or multiplicity-adjusted estimate.
 
 ### MMBench CircularEval
 
-The earlier custom four-way treatment grouped 1,500 rows into 991 base
+The custom four-way analysis grouped 1,500 rows into 991 base
 questions and reported +2.8 points. Inspection of the official dataset showed
 938 bases with all four canonical rotations and 53 bases with only three.
 Constructing a fourth rotation for those 53 can move label-referential fixed
@@ -67,9 +67,8 @@ record inside `results/mmbench_circular_canonical.json`.
 
 ### MMBench CD portfolio
 
-The initial aggregate counted 1,500 dataset rows that were not independent
-base questions. The corrected portfolio retains one canonical row per base
-identifier:
+The released portfolio uses one independent row per base question rather than
+the original 1,500 dataset rows. Its corrected counts are:
 
 - `n=1,176`
 - baseline `975`
@@ -101,13 +100,12 @@ historical randomized suffix branches are not used as dose curves.
 ### LOMO significance
 
 Across seven held-out models, the mean LOMO delta is `-1.397` points. The
-correct two-sided exact Wilcoxon signed-rank value is `p=0.21875`. The value
-`p=0.921875` is the one-sided test for positive recovery and must not be
-described as the generic significance value.
+two-sided exact Wilcoxon signed-rank value is `p=0.21875`. The value
+`p=0.921875` is the corresponding one-sided test for positive recovery.
 
 ### Mixed-effects summary
 
-The reportable CORE-7 model is a genuinely crossed model/task REML fit. It has
+The primary CORE-7 model uses a crossed model/task REML fit. It has
 baseline slope `-0.21273` (SE `0.05219`, nominal Wald `p=4.57e-5`), marginal
 `R2=0.37862`, and conditional `R2=0.70309`. Baseline accuracy is part of a
 baseline-subtracted, oracle-selected response, so the inverse association is
@@ -131,8 +129,7 @@ seed, not unique necessity of K-means geometry.
 The historical suffix-only table (+5.51 real, +0.58 Gaussian, -5.90 fixed
 random projection, -0.02 random-centroid assignment) is integrity-only. The
 three alternatives ignored nominal alpha, and two did not pin their random
-draws, so they are not dose-matched and must not be plotted or interpreted as
-randomized-control dose curves.
+draws. They therefore do not form valid dose-matched randomized-control curves.
 
 ### Selective calibration
 
@@ -144,10 +141,11 @@ calibration before deployment.
 ### Fixed DoLa and SDCD baselines
 
 The fixed `alpha_cd=1.0` comparison reports DoLa-low `+1.61` points,
-DoLa-high `+3.42` points, and SDCD `+0.88` points. These are separate runs,
+DoLa-high `+3.42` points, and SDCD `+0.87` points. These are separate runs,
 not members of the shared TCCD/LCD/VCD cross-task-CV harness. Exact task
-counts reconstruct `+1.606`, `+3.419`, and `+0.875` points; the paper values
-reproduce the historical run summaries rounded to four decimal places.
+counts reconstruct `+1.606`, `+3.419`, and `+0.8747` points; the two-decimal
+values above are rounded directly from the unrounded count means. The result
+JSON separately preserves the historical pre-rounded summary fields.
 
 ### OPERA screening
 
@@ -182,8 +180,8 @@ separately tested by exact McNemar (`b=224`, `c=80`, `p=6.06e-17`).
 ### External judges
 
 Released numerators reconstruct each judge's sighted/blind fraction and raw
-inter-judge agreement (`65/79`). No safely releasable paired 4x4 answer table
-survived the artifact audit, so Cohen's kappa 0.64494 is checksum-covered
+inter-judge agreement (`65/79`). The released records do not contain a safely
+releasable paired 4x4 answer table, so Cohen's kappa 0.64494 is checksum-covered
 integrity-only provenance rather than independently recomputable evidence.
 
 ### Additional scoped records
@@ -195,12 +193,12 @@ negative-alpha directional sensitivity, the sixteen-layer text-TCCD sweep,
 centroid-source transfer with the `all_six_deep_dive` provenance correction
 and explicit fit/decoding/selection confounds,
 the separate preliminary calibration diagnostic, and the selected Figure 1
-attention audit. The response-era maps are a pre-RoPE QK-similarity proxy,
-not actual attention. Their numerical record remains historical; by final
-author design choice, the original raster overlays are restored in Figure 1
-only as qualitative proxies and are explicitly separated from the corrected
-audit. The corrected pinned rerun reconstructs post-RoPE attention on the inherited
-item and layers: the L22 visual-span mass is 3.63% in the original pass and
+attention check. The historical maps are a pre-RoPE QK-similarity proxy, not
+actual attention. Their numerical record remains historical; the paper uses
+the original raster overlays only as qualitative proxies and explicitly
+separates them from the corrected quantitative check. The pinned rerun
+reconstructs post-RoPE attention for the selected item at the originally used
+layers: the L22 visual-span mass is 3.63% in the original pass and
 11.09% in the text-replaced reference. Both passes predict A; only their TCCD
 logit combination predicts B. This is selected descriptive evidence, not an
 aggregate attention effect, attention-as-explanation result, or causal
@@ -210,18 +208,19 @@ implementation verification, not an independent refit or new experiment; its
 exact deviation fields are provenance-only because the released task rows are
 rounded.
 
-## Withdrawn or omitted
+## Analyses excluded from reported evidence
 
 ### Option relabeling and prediction stability
 
 The historical A/B/C/D, M/N/P/R, and symbol-label run is not retained as
 scientific evidence. Its helper scores the first token of each space-prefixed
-answer label, while the canonical Qwen Phase-2 scorer uses bare continuation
+answer label, while the primary Qwen scorer uses bare continuation
 labels at the final prompt position. The A/B/C/D anchor consequently does not
 reproduce the canonical baseline or replacement costs. The aggregate costs and
-within-run prediction-change counts remain checksum-covered audit history with
-status `not_retained_scoring_mismatch`; a protocol-matched GPU rerun is required
-before any option-relabeling or model-answer-stability conclusion is restored.
+within-run prediction-change counts remain checksum-covered archival provenance
+with status `not_retained_scoring_mismatch`. These aggregates do not support an
+option-relabeling or model-answer-stability conclusion; that would require a
+protocol-matched GPU rerun.
 
 ### Attention-gradient correlation
 

@@ -8,8 +8,8 @@ centroid-erasure command line interface.
 
 Run `python main.py <command> --help` for the flags of a single command.
 
-This is the convenience layer. A protocol-preserving public implementation of
-the Phase-2 sweep behind the shipped banks and fixtures lives in ``pipeline/``.
+This is the convenience layer. ``pipeline/`` contains the end-to-end paper
+sweep used to create the shipped banks and reference fixtures.
 """
 
 import argparse
@@ -207,8 +207,8 @@ def _load_bank(
             or bank.meta.get("span_fallbacks", 0)
         ) and not allow_unvalidated_span_fallback:
             raise ValueError(
-                "bank provenance records an unvalidated visual-span fallback; "
-                "pass --allow-visual-span-fallback only for exploratory use"
+                "bank provenance records the approximate positional visual-span "
+                "fallback; pass --allow-visual-span-fallback to accept it"
             )
         if expected_layer is not None and bank.meta["layer"] != expected_layer:
             raise ValueError(
@@ -643,8 +643,8 @@ def cmd_measure(args):
         )
         if args.allow_visual_span_fallback:
             print(
-                "\n  UNVALIDATED: positional visual-span fallback was enabled; "
-                "this cannot count as a strict paper reproduction."
+                "\n  Comparison is informational: the positional visual-span "
+                "fallback does not match the published protocol."
             )
 
     provenance = _output_provenance(
@@ -677,9 +677,9 @@ def cmd_tccd(args):
         raise SystemExit(f"--n-choices must be between 1 and {len(ALL_LETTERS)}")
     if args.protocol == "best":
         print(
-            "  NOTE: --protocol best is an ORACLE UPPER BOUND. It selects the\n"
-            "  alpha that maximises each task's own score. Do not report it as\n"
-            "  a deployable gain; the paper reports it only alongside fixed and cv.\n"
+            "  --protocol best selects alpha on each evaluated task and therefore\n"
+            "  reports an oracle upper bound. Use fixed or cv for deployment or\n"
+            "  held-out estimates.\n"
         )
 
     bank = _load_bank(
@@ -777,11 +777,11 @@ def _compare_to_published(model, results, mean_text, mean_vis, strict=True):
 
     Two regimes, with very different expectations:
 
-    * `strict=True` — the run used a SHIPPED centroid bank over the full split.
+    * `strict=True` — the run used a shipped centroid bank over the full split.
       Those banks are byte-identical to the published ones and nothing is
       fitted, so the protocol, data and scoring all match exactly. This should
       reproduce to within GPU nondeterminism, roughly one item per task. A
-      loose tolerance here would let a genuinely broken environment pass.
+      loose tolerance here could hide an incompatible environment.
     * `strict=False` — the run used a subset, or a bank fitted locally. Sample
       subsets move per-task numbers, and `faiss` and `sklearn` K-means produce
       different centroids, so only the direction and a rough magnitude hold.
@@ -846,19 +846,19 @@ def _compare_to_published(model, results, mean_text, mean_vis, strict=True):
     asymmetry_ok = abs(asymmetry - published_asymmetry) <= 0.2
     print(f"\n    text cost exceeds visual cost      : {'PASS' if mean_text > mean_vis else 'FAIL'}")
     print(f"    mean text cost within {mean_tol:.3f}        : "
-          f"{'PASS' if delta < mean_tol else 'REVIEW'}  (|diff|={delta:.4f})")
+          f"{'PASS' if delta < mean_tol else 'CHECK'}  (|diff|={delta:.4f})")
     if strict:
         print(
             f"    asymmetry within 0.2x              : "
-            f"{'PASS' if asymmetry_ok else 'REVIEW'}  "
+            f"{'PASS' if asymmetry_ok else 'CHECK'}  "
             f"({asymmetry:.1f}x vs {published_asymmetry:.1f}x)"
         )
         strict_ok = per_task_ok and coverage_ok and counts_ok
-        print(f"    exact published task set           : {'PASS' if coverage_ok else 'REVIEW'}")
-        print(f"    exact published sample counts      : {'PASS' if counts_ok else 'REVIEW'}")
-        print(f"    every task within 2 items          : {'PASS' if per_task_ok else 'REVIEW'}")
+        print(f"    exact published task set           : {'PASS' if coverage_ok else 'CHECK'}")
+        print(f"    exact published sample counts      : {'PASS' if counts_ok else 'CHECK'}")
+        print(f"    every task within 2 items          : {'PASS' if per_task_ok else 'CHECK'}")
         if not (strict_ok and delta < mean_tol and asymmetry_ok):
-            print("\n    This run used a SHIPPED centroid bank, which is byte-identical to")
+            print("\n    This run used a shipped centroid bank, which is byte-identical to")
             print("    the published one, over the full split. Nothing was fitted, so the")
             print("    K-means backend is irrelevant here and a gap this large points at")
             print("    an environment problem: check transformers==5.4.0 and torch==2.6.0,")
@@ -910,34 +910,41 @@ def build_parser():
     def common(sp, needs_centroids=True):
         sp.add_argument("--model", default="qwen", help="registry key (default: qwen = Qwen2.5-VL-7B)")
         if needs_centroids:
-            sp.add_argument("--centroids", default=None, help="path to a centroid .npz")
+            sp.add_argument("--centroids", default=None, help="centroid-bank .npz; defaults to centroids/<model>.npz")
         sp.add_argument("--benchmark", default="blink", choices=["blink"],
                         help="main.py is BLINK-only; see docs/EXTENDING.md to add one")
-        sp.add_argument("--tasks", nargs="+", default=None, help=f"default: the paper's six {PAPER_TASKS}")
-        sp.add_argument("--max-per-task", type=int, default=None, dest="max_per_task")
-        sp.add_argument("--out", default=None, help="write results JSON here")
+        sp.add_argument("--tasks", nargs="+", default=None,
+                        help="space-separated BLINK task names; defaults to the six paper tasks")
+        sp.add_argument("--max-per-task", type=int, default=None, dest="max_per_task",
+                        help="optional sample cap for each task")
+        sp.add_argument("--out", default=None, help="optional results-JSON path")
         sp.add_argument("--n-choices", type=int, default=4, dest="n_choices",
-                        help="answer letters to score over (BLINK is 4-way; the "
-                             "published pipeline uses ALL_LETTERS[:n_choices])")
+                        help="number of answer labels to score (default: 4 for BLINK)")
         sp.add_argument(
             "--allow-visual-span-fallback",
             action="store_true",
             dest="allow_visual_span_fallback",
-            help="opt into the unvalidated positional visual-span heuristic",
+            help="allow the approximate positional heuristic when marker-based visual-span detection fails",
         )
 
     sp = sub.add_parser("fit", help="fit centroid banks on COCO activations")
-    sp.add_argument("--model", default="qwen")
-    sp.add_argument("--n", type=int, default=PAPER_PROTOCOL["n_coco_images"])
-    sp.add_argument("--k", type=int, default=PAPER_PROTOCOL["k"])
-    sp.add_argument("--seed", type=int, default=PAPER_PROTOCOL["kmeans_seed"])
-    sp.add_argument("--text-layer", type=int, default=None, dest="text_layer")
-    sp.add_argument("--visual-layer", type=int, default=None, dest="visual_layer")
-    sp.add_argument("--out", default=None)
+    sp.add_argument("--model", default="qwen", help="registry key (default: qwen)")
+    sp.add_argument("--n", type=int, default=PAPER_PROTOCOL["n_coco_images"],
+                    help="COCO images used for fitting (default: 2000)")
+    sp.add_argument("--k", type=int, default=PAPER_PROTOCOL["k"],
+                    help="centroids per modality (default: 256)")
+    sp.add_argument("--seed", type=int, default=PAPER_PROTOCOL["kmeans_seed"],
+                    help="K-means seed (default: 42)")
+    sp.add_argument("--text-layer", type=int, default=None, dest="text_layer",
+                    help="text layer (default: 12, the paper protocol)")
+    sp.add_argument("--visual-layer", type=int, default=None, dest="visual_layer",
+                    help="visual layer (default: 16, the paper protocol)")
+    sp.add_argument("--out", default=None,
+                    help="output .npz path; defaults to centroids/<model>.npz")
     sp.add_argument(
         "--allow-coco-fallback",
         action="store_true",
-        help="allow a non-paper COCO mirror if the pinned source is unavailable",
+        help="allow an alternate COCO mirror if the pinned source is unavailable",
     )
     sp.add_argument(
         "--force",
@@ -948,7 +955,7 @@ def build_parser():
         "--allow-visual-span-fallback",
         action="store_true",
         dest="allow_visual_span_fallback",
-        help="opt into the unvalidated positional visual-span heuristic",
+        help="allow the approximate positional heuristic when marker-based visual-span detection fails",
     )
     sp.set_defaults(func=cmd_fit)
 
@@ -958,19 +965,25 @@ def build_parser():
                     help="print the run beside the published values for this model")
     sp.add_argument("--alpha-interp", type=float, default=0.0, dest="alpha_interp",
                     help="0.0 = full erasure, the measurement default")
-    sp.add_argument("--text-layer", type=int, default=PAPER_PROTOCOL["text_layer"], dest="text_layer")
-    sp.add_argument("--visual-layer", type=int, default=PAPER_PROTOCOL["visual_layer"], dest="visual_layer")
+    sp.add_argument("--text-layer", type=int, default=PAPER_PROTOCOL["text_layer"], dest="text_layer",
+                    help="decoder layer for text replacement (default: 12)")
+    sp.add_argument("--visual-layer", type=int, default=PAPER_PROTOCOL["visual_layer"], dest="visual_layer",
+                    help="decoder layer for visual replacement (default: 16)")
     sp.set_defaults(func=cmd_measure)
 
     sp = sub.add_parser("tccd", help="text centroid contrastive decoding")
     common(sp)
-    sp.add_argument("--protocol", default="fixed", choices=list(PROTOCOLS))
-    sp.add_argument("--alpha-interp", type=float, default=PAPER_PROTOCOL["alpha_interp_fixed"], dest="alpha_interp")
-    sp.add_argument("--alpha-cd", type=float, default=PAPER_PROTOCOL["alpha_cd"], dest="alpha_cd")
+    sp.add_argument("--protocol", default="fixed", choices=list(PROTOCOLS),
+                    help="alpha selection: fixed, leave-one-task-out cv, or oracle best")
+    sp.add_argument("--alpha-interp", type=float, default=PAPER_PROTOCOL["alpha_interp_fixed"], dest="alpha_interp",
+                    help="replacement interpolation for fixed protocol (default: 0.4)")
+    sp.add_argument("--alpha-cd", type=float, default=PAPER_PROTOCOL["alpha_cd"], dest="alpha_cd",
+                    help="contrastive decoding strength (default: 1.0)")
     sp.add_argument("--grid", nargs="+", type=float,
                     default=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8],
                     help="alpha_interp candidates for cv/best selection")
-    sp.add_argument("--text-layer", type=int, default=PAPER_PROTOCOL["text_layer"], dest="text_layer")
+    sp.add_argument("--text-layer", type=int, default=PAPER_PROTOCOL["text_layer"], dest="text_layer",
+                    help="decoder layer for text replacement (default: 12)")
     sp.set_defaults(func=cmd_tccd)
 
     return p

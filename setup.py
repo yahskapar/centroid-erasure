@@ -38,8 +38,7 @@ setup(
         "pandas==2.3.3",
     ],
     extras_require={
-        # The repository-only aggregate statistics refit is not imported by
-        # the library wheel, but both reproducibility and tests exercise it.
+        # Used by supplementary statistics scripts and their tests.
         "reproduction": [STATSMODELS_REQUIREMENT],
         "test": ["pytest==8.4.2", STATSMODELS_REQUIREMENT],
         # Needed only by quantised registry entries such as MedGemma.

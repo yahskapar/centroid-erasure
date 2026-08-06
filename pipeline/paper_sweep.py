@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Maintained seven-model Phase-2 paper sweep.
+"""End-to-end seven-model paper sweep.
 
-Runs the released, consistent protocol used for the primary camera-ready
-tables and figures:
+Runs the published protocol used for the primary tables and figures:
 
-  - N=2000 COCO images (flat grid shows no benefit from more)
-  - K=256 centroids (flat grid shows K doesn't matter much)
-  - α_cd configurable (camera-ready default 1.0)
+  - N=2000 COCO images
+  - K=256 centroids
+  - α_cd configurable (published default 1.0)
   - α_interp sweep: {0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8}
   - Segment ablation at α=0.4
   - Both visual and text centroid sufficiency
 
-The maintained pipeline exposes configurable α_cd, evaluates the six BLINK
-deep-dive tasks, runs all seven primary checkpoints by default, and resumes
+The maintained pipeline exposes configurable α_cd, evaluates the six primary
+BLINK tasks, runs all seven primary checkpoints by default, and resumes
 only from a complete result bound to the exact saved configuration and fitted
 centroid artifact.
 
@@ -62,14 +61,14 @@ from centroid_erasure.data.coco import COCO_REVISION
 from centroid_erasure.constants import ALL_LETTERS, HARVEST_PROMPT
 from centroid_erasure.centroids import CentroidBank
 
-# ── Protocol (determined by N×K scaling experiment) ──
+# ── Published protocol ──
 DEFAULT_ALPHA_CD = 1.0  # Standard CD; validated by N×K α_cd spot-check
 DEFAULT_SWEEP_ALPHAS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8)
 SWEEP_ALPHAS = list(DEFAULT_SWEEP_ALPHAS)
 SEGMENTS = ["all", "options", "question", "system"]
 SEGMENT_ALPHA = 0.4
-# Segment-dose-grid mode (camera-ready): set via --segments / --segment_alphas /
-# --segments_only. Defaults (None/False) preserve the original behavior exactly.
+# Segment-dose-grid mode: set via --segments / --segment_alphas /
+# --segments_only. The default settings reproduce the published sweep behavior.
 SEG_DOSE_SEGMENTS = None
 SEG_DOSE_ALPHAS = None
 SEGMENTS_ONLY = False
@@ -80,7 +79,7 @@ MAX_IMAGES = 2000
 K = 256
 TEXT_LAYER = 12
 if HARVEST_PROMPT != "Describe what you see in this image.\nAnswer:":
-    raise RuntimeError("shared HARVEST_PROMPT drifted from the Phase-2 protocol")
+    raise RuntimeError("shared HARVEST_PROMPT drifted from the published protocol")
 
 ALL_MODELS = ["qwen", "qwen_3b", "qwen3", "qwen3_4b",
               "internvl", "llava_ov", "idefics3"]
@@ -100,7 +99,7 @@ PUBLISHED_TASK_COUNTS = {
 
 
 class SweepFailure(RuntimeError):
-    """A failure that makes a model's result incomplete and non-reportable."""
+    """A failure that leaves a model result incomplete and unsafe to resume."""
 
     def __init__(self, stage, message, *, task=None, sample_index=None):
         super().__init__(message)
@@ -661,10 +660,10 @@ class TextCDHook:
         if n_post < 2:
             return (h,) + output[1:] if isinstance(output, tuple) else h
 
-        # Legacy segment identifiers are positional rather than semantic:
+        # Segment identifiers are positional rather than semantic:
         # "question" is the first 70% of the post-image tail, "options" is
         # its last 30%, and "system" is the pre-visual prefix (which includes
-        # template/control tokens). Keep this split for exact paper fidelity.
+        # template/control tokens). Retain this split to match published results.
         option_boundary = vis_end + int(n_post * 0.7)
 
         if self.segment == "all":
@@ -1536,7 +1535,7 @@ def _validate_sweep_options(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Maintained seven-model Phase-2 paper sweep")
+        description="End-to-end seven-model paper sweep")
     parser.add_argument("--models", type=str,
                         default=",".join(ALL_MODELS),
                         help="Comma-separated model names (default: all 7)")
@@ -1551,7 +1550,7 @@ def main():
                              "to validate model load + visual-token finder + pipeline.")
     parser.add_argument("--kmeans_seed", type=int, default=42,
                         help="K-means init seed (default 42 = paper protocol). "
-                             "Use 800/1337/2024/8320 for canonical-harness variance runs.")
+                             "Use 800/1337/2024/8320 for alternate fit-sensitivity runs.")
     parser.add_argument("--alphas", type=str, default=None,
                         help="Optional comma list overriding SWEEP_ALPHAS, "
                              "e.g. '0.1,0.4,0.5,0.8' for a reduced variance grid.")
@@ -1567,8 +1566,8 @@ def main():
     parser.add_argument(
         "--allow_visual_span_fallback",
         action="store_true",
-        help="Opt into the unvalidated positional visual-span heuristic. "
-             "The opt-in is recorded and is intended only for exploratory runs.",
+        help="Allow the approximate positional heuristic when marker-based "
+             "visual-span detection fails. The opt-in is recorded in outputs.",
     )
     args = parser.parse_args()
 
@@ -1679,7 +1678,7 @@ def main():
         _write_json_atomic(out_dir / "config.json", config)
 
     print(f"{'='*65}")
-    print("  Maintained Seven-Model Phase-2 Paper Sweep")
+    print("  End-to-End Seven-Model Paper Sweep")
     print(f"{'='*65}")
     print(f"  Models:     {models}")
     print(f"  Protocol:   N={MAX_IMAGES}, K={K}, α_cd={alpha_cd}")

@@ -1,5 +1,5 @@
 {
-  "description": "Integrity manifest for the artifacts shipped with centroid-erasure. Every file listed here is byte-identical to the artifact behind the published COLM 2026 results (source run: cross_model_v2_20260407_144343). The demo/fixtures/*.json are the raw per-model sweep outputs, so a local run can be compared directly against ours; note they contain more than the paper prints (see README, 'Released Models and Artifacts').",
+  "description": "Integrity manifest for the artifacts shipped with centroid-erasure. Every file listed here is byte-identical to the artifact behind the published COLM 2026 results (source run: cross_model_v2_20260407_144343). The demo/fixtures/*.json are the raw per-model sweep outputs, so a local run can be compared directly with the released reference; they contain more than the paper prints (see README, 'Released Artifacts').",
   "protocol": {
     "n_coco_images": 2000,
     "k": 256,

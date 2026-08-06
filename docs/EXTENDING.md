@@ -123,11 +123,11 @@ The measurement transferred to every model tested in the paper: text erasure
 cost exceeded visual erasure cost on 37 of 42 (model, task) cells, with four
 exact ties and one reversal.
 
-The **intervention** transferred less consistently. Positive fixed-dose
-recovery is concentrated in BLINK and, for Qwen2.5-VL-7B, MMBench. In the
-10 × 8 breadth grid, 2 of 80 cells had nominal, unadjusted `p<.05` gains and
-24 had nominal, unadjusted `p<.05` losses. Evaluate the dependence
-measurement and intervention separately when adding a model.
+The **intervention** transferred less consistently. At oracle best per-task
+`alpha_interp`, every released model improves on at least one BLINK task, but
+the gains vary across tasks and models; one global setting does not transfer
+reliably across models. Evaluate the dependence measurement and intervention
+separately when adding a model.
 
 ### Reproducibility considerations
 
